@@ -44,6 +44,7 @@ const endpoints: Endpoint[] = [
       { name: "n_docs", type: "number", description: "Number of results to return (default: 20)" },
       { name: "nprobe", type: "number", description: "FAISS nprobe override" },
       { name: "min_tile_height", type: "number", description: "Filter out tiles shorter than this" },
+      { name: "articles_only", type: "boolean", description: "Drop Wikipedia meta pages (Portal:, List_of_, disambiguation, …) — keeps real articles" },
       { name: "instruction", type: "string", description: "Custom embedding instruction" },
     ],
     responseFields: [

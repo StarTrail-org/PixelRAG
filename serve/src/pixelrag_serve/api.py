@@ -37,6 +37,7 @@ import io
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -85,6 +86,23 @@ class SearchRequest(BaseModel):
     min_tile_height: int | None = None  # filter out small/blank chunks
     instruction: str | None = None  # override query embedding instruction
     include_images: bool = False  # return base64-encoded tile images
+    articles_only: bool = False  # drop Wikipedia meta pages (Portal:, List_of_, …)
+
+
+# Wikipedia meta/aggregator pages that pollute "find the article" results.
+# Matches both bare titles ("Portal:The_arts/Featured_picture",
+# "List_of_German_physicists") and full /wiki/ URLs. Opt-in via articles_only.
+_META_RE = re.compile(
+    r"(?:^|/wiki/)(?:Portal|Wikipedia|WP|Template|Category|Draft|Help|File|Module|Book|Special|Talk|MediaWiki|Topic)[ _]*:"
+    r"|(?:^|/wiki/)(?:List|Outline|Index|Glossary|Timeline)[ _]of[ _]"
+    r"|\(disambiguation\)"
+    r"|[ _]\((?:surname|given[ _]name)\)",
+    re.IGNORECASE,
+)
+
+
+def _is_meta(url: str) -> bool:
+    return bool(_META_RE.search(url))
 
 
 class Hit(BaseModel):
@@ -311,8 +329,14 @@ async def search(req: SearchRequest):
     if req.nprobe is not None:
         index.nprobe = req.nprobe
 
-    # Over-fetch when filtering to ensure enough results after filtering
-    fetch_k = req.n_docs * 5 if req.min_tile_height else req.n_docs
+    # Over-fetch when filtering to ensure enough results after filtering.
+    # Meta pages can be the majority of raw hits, so articles_only needs more.
+    if req.articles_only:
+        fetch_k = req.n_docs * 10
+    elif req.min_tile_height:
+        fetch_k = req.n_docs * 5
+    else:
+        fetch_k = req.n_docs
     distances, indices = index.search(query_vectors, fetch_k)
 
     if req.nprobe is not None:
@@ -339,6 +363,9 @@ async def search(req: SearchRequest):
             if req.min_tile_height and th < req.min_tile_height:
                 continue
             aid = int(article_ids[vid])
+            url = _resolve_url(aid)
+            if req.articles_only and _is_meta(url):
+                continue
             ti = int(tile_indices[vid])
             ci = int(chunk_indices[vid])
             tile_path = _resolve_path(aid, ti, ci)
@@ -366,7 +393,7 @@ async def search(req: SearchRequest):
                     y_offset=int(y_offsets[vid]),
                     tile_height=th,
                     path=rel_path,
-                    url=_resolve_url(aid),
+                    url=url,
                     image_base64=img_b64,
                 )
             )
@@ -540,12 +567,19 @@ def load(args):
 
         book = args.zim_book or _derive_kiwix_book(args.kiwix_url)
         if not book:
-            logger.warning("render-on-demand: could not derive kiwix book from %s "
-                           "(pass --zim-book)", args.kiwix_url)
+            logger.warning(
+                "render-on-demand: could not derive kiwix book from %s "
+                "(pass --zim-book)",
+                args.kiwix_url,
+            )
         cache = os.path.join(args.tiles_dir or "./tiles_cache", "_ondemand")
         _state["ondemand"] = OnDemandTiles(args.kiwix_url, book, cache)
-        logger.info("On-demand tile rendering enabled (kiwix=%s book=%s cache=%s)",
-                    args.kiwix_url, book, cache)
+        logger.info(
+            "On-demand tile rendering enabled (kiwix=%s book=%s cache=%s)",
+            args.kiwix_url,
+            book,
+            cache,
+        )
 
 
 def _derive_kiwix_book(kiwix_url: str) -> str:
@@ -564,8 +598,9 @@ def _derive_kiwix_book(kiwix_url: str) -> str:
         return ""
 
 
-def _ondemand_chunk_b64(article_id: int, tile_index: int, chunk_index: int,
-                        tile_height: int):
+def _ondemand_chunk_b64(
+    article_id: int, tile_index: int, chunk_index: int, tile_height: int
+):
     """Render+chunk the page on demand and return the chunk as base64 PNG."""
     od = _state.get("ondemand")
     if od is None:
@@ -614,16 +649,19 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=30001)
     parser.add_argument(
-        "--render-on-demand", action="store_true",
+        "--render-on-demand",
+        action="store_true",
         help="Render tile images on demand from a kiwix ZIM (no materialized tiles/ dir). "
-             "Requires a running kiwix-serve (see --kiwix-url).",
+        "Requires a running kiwix-serve (see --kiwix-url).",
     )
     parser.add_argument(
-        "--kiwix-url", default=os.environ.get("PIXELRAG_KIWIX_URL", "http://localhost:30900"),
+        "--kiwix-url",
+        default=os.environ.get("PIXELRAG_KIWIX_URL", "http://localhost:30900"),
         help="Base URL of a running kiwix-serve, for --render-on-demand",
     )
     parser.add_argument(
-        "--zim-book", default=os.environ.get("PIXELRAG_ZIM_BOOK"),
+        "--zim-book",
+        default=os.environ.get("PIXELRAG_ZIM_BOOK"),
         help="kiwix book id for /content/<book>/ (auto-derived from --kiwix-url if omitted)",
     )
     args = parser.parse_args()

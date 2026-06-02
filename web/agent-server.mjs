@@ -96,7 +96,7 @@ function createTools(onEvent, uploadedImage) {
       const resp = await fetch(`${SEARCH_URL}/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ queries: [queryObj], n_docs: args.n_results ?? 5 }),
+        body: JSON.stringify({ queries: [queryObj], n_docs: args.n_results ?? 5, articles_only: true }),
       })
       if (!resp.ok) {
         return { content: [{ type: "text", text: `Search API error: ${resp.status}` }] }

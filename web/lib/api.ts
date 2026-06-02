@@ -15,7 +15,9 @@ export async function search(req: SearchRequest): Promise<SearchResponse> {
   return fetchApi<SearchResponse>("/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
+    // Default to article pages (drop Portal:/List_of_/disambiguation meta pages);
+    // an explicit articles_only in req still wins.
+    body: JSON.stringify({ articles_only: true, ...req }),
   });
 }
 

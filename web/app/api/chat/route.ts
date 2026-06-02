@@ -99,6 +99,7 @@ function createTools(
         body: JSON.stringify({
           queries: [queryObj],
           n_docs: args.n_results ?? 5,
+          articles_only: true,
         }),
       })
       if (!resp.ok) {

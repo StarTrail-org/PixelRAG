@@ -10,6 +10,7 @@ export interface SearchRequest {
   nprobe?: number;
   min_tile_height?: number;
   instruction?: string;
+  articles_only?: boolean;
 }
 
 export interface Hit {
