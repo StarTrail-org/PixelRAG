@@ -1,3 +1,4 @@
+import type { Metadata } from "next"
 import { Inter, Crimson_Pro, JetBrains_Mono } from "next/font/google"
 
 import "./globals.css"
@@ -11,6 +12,16 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
   variable: "--font-mono",
 })
+
+export const metadata: Metadata = {
+  metadataBase: new URL("https://pixelrag.ai"),
+  title: {
+    default: "PixelRAG — visual Wikipedia search",
+    template: "%s · PixelRAG",
+  },
+  description:
+    "Search Wikipedia by how it looks, not just the text it contains. PixelRAG renders pages as screenshots and retrieves over the images.",
+}
 
 export default function RootLayout({
   children,

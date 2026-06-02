@@ -518,12 +518,30 @@ function ThinkingTrace({ text, active }: { text: string; active: boolean }) {
 
 /* ─── Tile Gallery ─── */
 
+// Vivid, varied phrasing for "Claude is reading the screenshots with its eyes".
+const READING_VERBS = [
+  "Looking at",
+  "Reading",
+  "Studying",
+  "Examining",
+  "Poring over",
+  "Peering at",
+  "Taking in",
+  "Scanning",
+]
+
 function TileGallery({ tiles, loading }: { tiles: TileView[]; loading?: boolean }) {
+  const n = tiles.length
+  // Seed by the first tile so the verb stays put as more tiles stream in,
+  // but differs from answer to answer.
+  const verb = READING_VERBS[(tiles[0]?.article_id ?? n) % READING_VERBS.length]
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-5">
       <div className="mb-2.5 flex items-center gap-2">
         <Eye className="h-3.5 w-3.5 text-[var(--chat-warm)]" />
-        <span className="text-[12px] font-medium text-[var(--chat-secondary)]">Reading {tiles.length} tile{tiles.length > 1 ? "s" : ""}</span>
+        <span className="text-[12px] font-medium text-[var(--chat-secondary)]">
+          {verb} {n} screenshot{n > 1 ? "s" : ""}
+        </span>
         {loading && <Loader2 className="h-3 w-3 animate-spin text-[var(--chat-warm)]" />}
       </div>
       <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-thin">
