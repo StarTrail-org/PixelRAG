@@ -40,7 +40,7 @@ export default function RootLayout({
                 <img
                   src="/logo.png"
                   alt=""
-                  className="h-7 w-auto transition-transform duration-300 group-hover:scale-105 dark:invert"
+                  className="h-9 w-auto transition-transform duration-300 group-hover:scale-105 dark:invert"
                 />
                 <span className="flex items-baseline gap-0.5">
                   <span className="font-display text-xl font-semibold tracking-tight">
