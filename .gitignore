@@ -66,3 +66,7 @@ eval/evqa_lora_inat_nothink.jsonl
 eval/paper_grader_out/
 node_modules/
 .next/
+
+# local scratch / test artifacts (never commit)
+tmp/
+demos/demo_tiles/
