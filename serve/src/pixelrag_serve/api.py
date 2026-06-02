@@ -346,6 +346,8 @@ async def search(req: SearchRequest):
             if req.include_images and tile_path and os.path.exists(tile_path):
                 with open(tile_path, "rb") as fp:
                     img_b64 = base64.b64encode(fp.read()).decode()
+            elif req.include_images and _state.get("ondemand") is not None:
+                img_b64 = _ondemand_chunk_b64(aid, ti, ci, th)
             # Expose a relative tile path, not the absolute server filesystem
             # path (avoids leaking the host's directory layout; clients fetch
             # tiles via /tile/{article_id}/{tile_index}/{chunk_index}).
@@ -527,8 +529,62 @@ def load(args):
             "index_built_at": index_built_at,
             "index_size_bytes": index_size,
             "metadata_size_bytes": meta_size,
+            "ondemand": None,
         }
     )
+
+    # Optional: render tile images on demand from a kiwix ZIM instead of reading a
+    # materialized (multi-TB) tiles/ dir. Only retrieved pages get rendered + cached.
+    if getattr(args, "render_on_demand", False):
+        from .render_ondemand import OnDemandTiles
+
+        book = args.zim_book or _derive_kiwix_book(args.kiwix_url)
+        if not book:
+            logger.warning("render-on-demand: could not derive kiwix book from %s "
+                           "(pass --zim-book)", args.kiwix_url)
+        cache = os.path.join(args.tiles_dir or "./tiles_cache", "_ondemand")
+        _state["ondemand"] = OnDemandTiles(args.kiwix_url, book, cache)
+        logger.info("On-demand tile rendering enabled (kiwix=%s book=%s cache=%s)",
+                    args.kiwix_url, book, cache)
+
+
+def _derive_kiwix_book(kiwix_url: str) -> str:
+    """Read the kiwix-serve catalog and return the /content/<book> id."""
+    import re
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            kiwix_url.rstrip("/") + "/catalog/v2/entries", timeout=10
+        ) as r:
+            xml = r.read().decode()
+        m = re.search(r'href="/content/([^"/]+)"', xml)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def _ondemand_chunk_b64(article_id: int, tile_index: int, chunk_index: int,
+                        tile_height: int):
+    """Render+chunk the page on demand and return the chunk as base64 PNG."""
+    od = _state.get("ondemand")
+    if od is None:
+        return None
+    p = od.chunk_path(article_id, _resolve_url(article_id), tile_index, chunk_index)
+    if not p or not os.path.exists(p):
+        return None
+    import io
+
+    from PIL import Image
+
+    im = Image.open(p)
+    # The on-demand render captures a full tile_height; trim the (padded) last
+    # chunk back to the height the index recorded so it matches the built tile.
+    if tile_height and im.height > tile_height:
+        im = im.crop((0, 0, im.width, tile_height))
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 def main():
@@ -557,6 +613,19 @@ def main():
     )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=30001)
+    parser.add_argument(
+        "--render-on-demand", action="store_true",
+        help="Render tile images on demand from a kiwix ZIM (no materialized tiles/ dir). "
+             "Requires a running kiwix-serve (see --kiwix-url).",
+    )
+    parser.add_argument(
+        "--kiwix-url", default=os.environ.get("PIXELRAG_KIWIX_URL", "http://localhost:30900"),
+        help="Base URL of a running kiwix-serve, for --render-on-demand",
+    )
+    parser.add_argument(
+        "--zim-book", default=os.environ.get("PIXELRAG_ZIM_BOOK"),
+        help="kiwix book id for /content/<book>/ (auto-derived from --kiwix-url if omitted)",
+    )
     args = parser.parse_args()
 
     load(args)
