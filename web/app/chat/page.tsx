@@ -14,8 +14,10 @@ import {
   ChevronRight,
   ImagePlus,
   X,
+  Clock,
 } from "lucide-react"
 import { tileUrl } from "@/lib/api"
+import { getHistory, addHistory, clearHistory } from "@/lib/history"
 import { motion, AnimatePresence } from "framer-motion"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -113,6 +115,7 @@ function ChatPageInner() {
     const query = (text ?? input).trim()
     const img = imageOverride ?? image
     if ((!query && !img) || isStreaming) return
+    if (query) addHistory(query, "ask")
     const userMsg: ChatMessage = { id: crypto.randomUUID(), role: "user", content: query, image: img }
     const assistantMsg: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", searches: [] }
     setMessages((prev) => [...prev, userMsg, assistantMsg])
@@ -300,6 +303,8 @@ export default function ChatPage() {
 /* ─── Empty State ─── */
 
 function EmptyState({ onExample, onSearchMode }: { onExample: (q: string) => void; onSearchMode: () => void }) {
+  const [recent, setRecent] = React.useState<string[]>([])
+  React.useEffect(() => setRecent(getHistory("ask")), [])
   return (
     <div className="relative flex h-full flex-col items-center justify-center px-6">
       {/* Background mesh */}
@@ -353,6 +358,35 @@ function EmptyState({ onExample, onSearchMode }: { onExample: (q: string) => voi
           </button>
         ))}
       </motion.div>
+
+      {/* Your recent questions (saved locally on this device) */}
+      {recent.length > 0 && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }} className="relative z-10 mt-7 w-full max-w-lg">
+          <div className="mb-2.5 flex items-center justify-between px-1">
+            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--chat-muted)]">
+              <Clock className="h-3 w-3" /> Recent
+            </span>
+            <button
+              onClick={() => { clearHistory("ask"); setRecent([]) }}
+              className="text-[11px] text-[var(--chat-muted)] transition-colors hover:text-[var(--chat-secondary)]"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {recent.map((q) => (
+              <button
+                key={q}
+                onClick={() => onExample(q)}
+                title={q}
+                className="max-w-[15rem] truncate rounded-full border border-[var(--chat-border)] bg-[var(--chat-card)] px-3 py-1.5 text-[12px] text-[var(--chat-secondary)] transition-all hover:border-[var(--chat-accent-dim)] hover:text-[var(--chat-fg)]"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </motion.div>
+      )}
     </div>
   )
 }
