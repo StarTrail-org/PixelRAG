@@ -124,10 +124,10 @@ const endpoints: Endpoint[] = [
 
 export default function DocsPage() {
   const initialId = typeof window !== "undefined" ? window.location.hash.slice(1) : ""
-  const [activeId, setActiveId] = React.useState(
-    endpoints.find((e) => e.id === initialId)?.id ?? endpoints[0].id
+  const [activeId, setActiveId] = React.useState<string>(
+    endpoints.find((e) => e.id === initialId)?.id ?? "overview"
   )
-  const active = endpoints.find((e) => e.id === activeId) ?? endpoints[0]
+  const active = endpoints.find((e) => e.id === activeId)
 
   function selectEndpoint(id: string) {
     setActiveId(id)
@@ -138,6 +138,19 @@ export default function DocsPage() {
     <div className="mx-auto flex max-w-6xl gap-0 px-6 py-10">
       {/* Sidebar */}
       <aside className="hidden w-56 shrink-0 pr-6 md:block">
+        <nav className="mb-6 space-y-1">
+          <button
+            onClick={() => selectEndpoint("overview")}
+            className={cn(
+              "flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-sm transition-colors",
+              activeId === "overview"
+                ? "bg-muted font-medium text-foreground"
+                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+            )}
+          >
+            Overview
+          </button>
+        </nav>
         <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Endpoints
         </h2>
@@ -167,6 +180,7 @@ export default function DocsPage() {
           onChange={(e) => selectEndpoint(e.target.value)}
           className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
         >
+          <option value="overview">Overview</option>
           {endpoints.map((ep) => (
             <option key={ep.id} value={ep.id}>
               {ep.method} {ep.path}
@@ -177,59 +191,176 @@ export default function DocsPage() {
 
       {/* Main content */}
       <div className="min-w-0 flex-1">
-        {/* Two-step flow overview (persistent) */}
-        <div className="mb-6 rounded-lg border border-border/60 bg-muted/30 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-          <span className="font-medium text-foreground">Two-step flow:</span>{" "}
-          <code className="font-mono text-foreground">POST /search</code> returns ranked hits, each
-          carrying <code className="font-mono text-foreground">article_id</code>,{" "}
-          <code className="font-mono text-foreground">tile_index</code>, and{" "}
-          <code className="font-mono text-foreground">chunk_index</code> — pass those to{" "}
-          <code className="font-mono text-foreground">
-            {"GET /tile/{article_id}/{tile_index}/{chunk_index}"}
-          </code>{" "}
-          to fetch the screenshot image for each hit.
-        </div>
-        <div className="flex items-center gap-3">
-          <MethodBadge method={active.method} />
-          <h1 className="font-mono text-lg font-semibold">{active.path}</h1>
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">{active.summary}</p>
+        {active ? (
+          <>
+            <div className="flex items-center gap-3">
+              <MethodBadge method={active.method} />
+              <h1 className="font-mono text-lg font-semibold">{active.path}</h1>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">{active.summary}</p>
 
-        <div className="mt-6 space-y-6">
-          {/* Description */}
-          <p className="text-sm leading-relaxed text-foreground/80">
-            {active.description}
-          </p>
+            <div className="mt-6 space-y-6">
+              {/* Description */}
+              <p className="text-sm leading-relaxed text-foreground/80">
+                {active.description}
+              </p>
 
-          {/* Try it — most useful, put first */}
-          <ApiPlayground
-            key={active.id}
-            method={active.method}
-            path={active.path}
-            curlPrefix={active.curlPrefix}
-            defaultBody={active.defaultBody}
-            defaultParams={active.defaultParams}
-            buildPath={active.buildPath}
-          />
+              {/* Try it — most useful, put first */}
+              <ApiPlayground
+                key={active.id}
+                method={active.method}
+                path={active.path}
+                curlPrefix={active.curlPrefix}
+                defaultBody={active.defaultBody}
+                defaultParams={active.defaultParams}
+                buildPath={active.buildPath}
+              />
 
-          {/* Schema — Request + Response side by side when both exist */}
-          {active.requestFields ? (
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Section title="Request">
-                <FieldTable fields={active.requestFields} />
-              </Section>
-              {active.responseFields && (
+              {/* Schema — Request + Response side by side when both exist */}
+              {active.requestFields ? (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <Section title="Request">
+                    <FieldTable fields={active.requestFields} />
+                  </Section>
+                  {active.responseFields && (
+                    <Section title="Response">
+                      <FieldTable fields={active.responseFields} />
+                    </Section>
+                  )}
+                </div>
+              ) : active.responseFields ? (
                 <Section title="Response">
                   <FieldTable fields={active.responseFields} />
                 </Section>
-              )}
+              ) : null}
             </div>
-          ) : active.responseFields ? (
-            <Section title="Response">
-              <FieldTable fields={active.responseFields} />
-            </Section>
-          ) : null}
+          </>
+        ) : (
+          <OverviewSection onSelect={selectEndpoint} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Code({ children }: { children: React.ReactNode }) {
+  return (
+    <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground">
+      {children}
+    </code>
+  )
+}
+
+function FlowStep({
+  n,
+  method,
+  path,
+  title,
+  onSelect,
+  children,
+}: {
+  n: number
+  method: "GET" | "POST"
+  path: string
+  title: string
+  onSelect: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      className="flex w-full gap-4 rounded-xl border border-border/60 bg-card/40 p-4 text-left transition-colors hover:border-border hover:bg-muted/40"
+    >
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+        {n}
+      </span>
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <MethodBadge method={method} />
+          <code className="truncate font-mono text-xs text-foreground">{path}</code>
         </div>
+        <p className="mt-2 text-sm font-medium text-foreground">{title}</p>
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{children}</p>
+      </div>
+    </button>
+  )
+}
+
+function OverviewSection({ onSelect }: { onSelect: (id: string) => void }) {
+  return (
+    <div>
+      <h1 className="text-2xl font-semibold tracking-tight">API Overview</h1>
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+        PixelRAG indexes 8.28M Wikipedia articles as{" "}
+        <strong className="font-medium text-foreground">screenshot tiles</strong> and retrieves over
+        the images directly. Using the API is a two-step flow: search for the tiles that match your
+        query, then fetch each tile&apos;s screenshot.
+      </p>
+
+      <div className="mt-8 space-y-3">
+        <FlowStep
+          n={1}
+          method="POST"
+          path="/search"
+          title="Find matching tiles"
+          onSelect={() => onSelect("search")}
+        >
+          Send a natural-language question or an image. Each hit comes back with{" "}
+          <Code>article_id</Code>, <Code>tile_index</Code>, and <Code>chunk_index</Code>.
+        </FlowStep>
+        <FlowStep
+          n={2}
+          method="GET"
+          path="/tile/{article_id}/{tile_index}/{chunk_index}"
+          title="Fetch the screenshot"
+          onSelect={() => onSelect("tile")}
+        >
+          Pass those three IDs straight from a search hit to get the PNG — embed it with an{" "}
+          <Code>&lt;img&gt;</Code> tag.
+        </FlowStep>
+      </div>
+
+      <h2 className="mt-10 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Example
+      </h2>
+      <p className="mt-2 text-sm text-muted-foreground">
+        Search, then fetch the top hit&apos;s screenshot:
+      </p>
+      <pre className="mt-3 overflow-x-auto rounded-xl border border-border/60 bg-card p-4 text-xs leading-relaxed">
+        <code>{`# 1 — search (text or image query)
+curl -X POST https://pixelrag.ai/api/search \\
+  -H "Content-Type: application/json" \\
+  -d '{"queries": [{"text": "How does photosynthesis work?"}], "n_docs": 5}'
+
+# → hits[0] = { "article_id": 2840114, "tile_index": 0, "chunk_index": 0, ... }
+
+# 2 — fetch that hit's screenshot
+curl https://pixelrag.ai/api/tile/2840114/0/0 --output tile.png`}</code>
+      </pre>
+
+      <h2 className="mt-10 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Base URL
+      </h2>
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+        <Code>https://pixelrag.ai/api</Code> — or query the index server directly at{" "}
+        <Code>http://api.pixelrag.ai:30001</Code>.
+      </p>
+
+      <h2 className="mt-10 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Endpoints
+      </h2>
+      <div className="mt-3 space-y-1.5">
+        {endpoints.map((ep) => (
+          <button
+            key={ep.id}
+            onClick={() => onSelect(ep.id)}
+            className="flex w-full items-center gap-3 rounded-lg border border-border/40 px-3 py-2 text-left text-sm transition-colors hover:border-border hover:bg-muted/40"
+          >
+            <MethodBadge method={ep.method} />
+            <code className="shrink-0 font-mono text-xs text-foreground">{ep.path}</code>
+            <span className="truncate text-xs text-muted-foreground">{ep.summary}</span>
+          </button>
+        ))}
       </div>
     </div>
   )

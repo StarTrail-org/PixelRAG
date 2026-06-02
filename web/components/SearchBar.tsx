@@ -6,15 +6,16 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { getHistory, clearHistory } from "@/lib/history"
 
+// Both modes take natural language — the embedding model is trained on it, and
+// it retrieves better than bare keywords.
 const EXAMPLE_QUERIES = [
-  "The Starry Night",
-  "Periodic table",
-  "Taj Mahal",
-  "The Great Wave off Kanagawa",
-  "兵马俑",
+  "What does Van Gogh's The Starry Night look like?",
+  "How is the periodic table laid out?",
+  "What does the Taj Mahal look like?",
+  "What is depicted in The Great Wave off Kanagawa?",
+  "兵马俑长什么样？",
 ]
 
-// Ask mode wants natural questions, not search keywords.
 const ASK_EXAMPLES = [
   "Explain Van Gogh's The Starry Night",
   "How do you read the periodic table?",

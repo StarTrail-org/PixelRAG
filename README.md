@@ -51,6 +51,10 @@ curl -X POST http://api.pixelrag.ai:30001/search \
   -d '{"queries": [{"text": "What is the capital of France?"}], "n_docs": 5}'
 ```
 
+> **Live, hosted endpoint** — [`http://api.pixelrag.ai:30001`](http://api.pixelrag.ai:30001/status) serves a
+> pre-built index of **8.28M Wikipedia pages**. No setup, no API key. It even takes an image as the query
+> ([visual search](https://pixelrag.ai/docs#search)) — see the **[API reference →](https://pixelrag.ai/docs)**.
+
 Or try it in the browser at **[pixelrag.ai](https://pixelrag.ai)**, or run the
 [demo notebook](demos/quickstart.ipynb) (renders + searches, with the images inline).
 
