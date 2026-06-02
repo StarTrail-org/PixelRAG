@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=yichuan
 WorkingDirectory=/home/yichuan/visrag
-ExecStart=/home/yichuan/visrag/.venv/bin/pixelrag-serve \
+ExecStart=/home/yichuan/visrag/.venv/bin/pixelrag serve \
     --index-dir /home/yichuan/visrag-data/search_index \
     --tiles-dir /home/yichuan/visrag-data/tiles \
     --articles-json /home/yichuan/visrag-data/articles.json \
