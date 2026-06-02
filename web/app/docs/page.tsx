@@ -251,6 +251,42 @@ function Code({ children }: { children: React.ReactNode }) {
   )
 }
 
+// Minimal, dependency-free shell highlighter for the curl examples — colors
+// comments, commands, flags, quoted strings, and URLs.
+function ShellBlock({ code }: { code: string }) {
+  const TOKEN =
+    /(#.*)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(https?:\/\/[^\s'"]+)|(\bcurl\b)|(\s-{1,2}[A-Za-z][\w-]*)/g
+  const nodes: React.ReactNode[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+  let key = 0
+  while ((m = TOKEN.exec(code)) !== null) {
+    if (m.index > last) nodes.push(code.slice(last, m.index))
+    const [full, comment, str, url, cmd] = m
+    const cls = comment
+      ? "italic text-muted-foreground/60"
+      : str
+        ? "text-green-600 dark:text-green-400"
+        : url
+          ? "text-blue-600 dark:text-blue-400"
+          : cmd
+            ? "font-medium text-purple-600 dark:text-purple-400"
+            : "text-amber-600 dark:text-amber-400" // flag
+    nodes.push(
+      <span key={key++} className={cls}>
+        {full}
+      </span>
+    )
+    last = m.index + full.length
+  }
+  if (last < code.length) nodes.push(code.slice(last))
+  return (
+    <pre className="mt-3 overflow-x-auto rounded-xl border border-border/60 bg-card p-4 text-xs leading-relaxed text-foreground/80">
+      <code>{nodes}</code>
+    </pre>
+  )
+}
+
 function FlowStep({
   n,
   method,
@@ -326,8 +362,8 @@ function OverviewSection({ onSelect }: { onSelect: (id: string) => void }) {
       <p className="mt-2 text-sm text-muted-foreground">
         Search, then fetch the top hit&apos;s screenshot:
       </p>
-      <pre className="mt-3 overflow-x-auto rounded-xl border border-border/60 bg-card p-4 text-xs leading-relaxed">
-        <code>{`# 1 — search (text or image query)
+      <ShellBlock
+        code={`# 1 — search (text or image query)
 curl -X POST https://pixelrag.ai/api/search \\
   -H "Content-Type: application/json" \\
   -d '{"queries": [{"text": "How does photosynthesis work?"}], "n_docs": 5}'
@@ -335,8 +371,8 @@ curl -X POST https://pixelrag.ai/api/search \\
 # → hits[0] = { "article_id": 2840114, "tile_index": 0, "chunk_index": 0, ... }
 
 # 2 — fetch that hit's screenshot
-curl https://pixelrag.ai/api/tile/2840114/0/0 --output tile.png`}</code>
-      </pre>
+curl https://pixelrag.ai/api/tile/2840114/0/0 --output tile.png`}
+      />
 
       <h2 className="mt-10 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
         Base URL

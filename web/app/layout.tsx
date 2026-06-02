@@ -45,7 +45,7 @@ export default function RootLayout({
           <nav className="sticky top-0 z-50 bg-background/70 backdrop-blur-xl">
             <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
               {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-              <a href="/" className="group flex items-center gap-2.5">
+              <a href="/" className="group flex items-center gap-3.5">
                 {/* Logo mark — PixelRAG cat (inverts to white in dark mode) */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -54,10 +54,10 @@ export default function RootLayout({
                   className="h-9 w-auto transition-transform duration-300 group-hover:scale-105 dark:invert"
                 />
                 <span className="flex items-baseline gap-0.5">
-                  <span className="font-display text-xl font-semibold tracking-tight">
+                  <span className="font-display text-2xl font-semibold tracking-tight">
                     Pixel
                   </span>
-                  <span className="font-display text-xl font-semibold tracking-tight text-primary">
+                  <span className="font-display text-2xl font-semibold tracking-tight text-primary">
                     RAG
                   </span>
                 </span>
