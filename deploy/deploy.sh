@@ -32,10 +32,13 @@ say "changed: $(echo "$CHANGED" | tr '\n' ' ')"
 
 changed() { echo "$CHANGED" | grep -qE "$1"; }
 
-# 1. Python deps
+# 1. Python deps. MUST include the extras the box runs (the search API needs the
+# `serve` extra: torch, transformers, faiss-cpu). A bare `uv sync` installs only
+# the light core and would UNINSTALL torch/faiss, breaking the serves on their
+# next restart. `all` = embed+serve+index (no gpu — there's no CUDA here).
 if changed '^uv\.lock$'; then
-  say "uv.lock changed -> uv sync"
-  uv sync >>"$LOG" 2>&1 || say "WARN: uv sync failed"
+  say "uv.lock changed -> uv sync --extra all"
+  uv sync --extra all >>"$LOG" 2>&1 || say "WARN: uv sync failed"
 fi
 
 # 2. Agent backend — cheap restart, safe to automate.
