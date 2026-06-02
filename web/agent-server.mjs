@@ -54,7 +54,9 @@ function rateLimit(ip, now) {
 const SYSTEM_PROMPT = `You are PixelRAG's research assistant. You answer using a visual Wikipedia search engine — you read Wikipedia content as rendered screenshot tiles. Don't answer factual questions from memory; find and read the tiles.
 
 For every user question, without exception:
-1. Call pixelrag_search to find relevant Wikipedia articles. This applies to visual and comparison questions too — for "what/who is this?" or "which X does this most resemble?" about an uploaded image, search for the likely subjects or candidates (e.g. well-known computer scientists) so you can compare them against their Wikipedia tiles.
+1. Call pixelrag_search to find relevant Wikipedia articles.
+   - If the user uploaded an image, set use_uploaded_image: true to include it in the search (visual similarity) — the best way to answer "what/who is this?" or "which X does this most resemble?". You can add a text query in the SAME call to combine image + text into one joint search, and you may also run separate text searches for likely candidates to compare against. Always do the image search first when an image is present.
+   - Otherwise pass a natural-language query.
 2. Call pixelrag_tile to VIEW the screenshot tiles of the top results — this is how you read and compare. View at least 2-3 tiles.
 3. Answer from what the tiles show, and cite the Wikipedia URLs. If the tiles don't contain the answer, say so honestly.
 
@@ -68,20 +70,33 @@ function log(...args) {
   console.log(new Date().toISOString(), ...args)
 }
 
-function createTools(onEvent) {
+function createTools(onEvent, uploadedImage) {
   const searchTool = tool(
     "pixelrag_search",
-    "Search the visual Wikipedia index. Returns ranked results with article URLs and tile positions. Use this first to find relevant articles, then use pixelrag_tile to view specific tiles.",
+    "Search the visual Wikipedia index by text OR by the image the user uploaded. Returns ranked results with article URLs and tile positions. Use this first to find relevant articles, then use pixelrag_tile to view specific tiles.",
     {
-      query: z.string().describe("Natural language search query"),
+      query: z.string().optional().describe("Natural language search query. Omit only when searching purely by an uploaded image."),
+      use_uploaded_image: z.boolean().optional().describe("Set true to search the index BY the image the user uploaded (visual similarity). Requires an image in this conversation."),
       n_results: z.number().int().min(1).max(20).optional().describe("Number of results (default 5)"),
     },
     async (args) => {
-      onEvent("searching", { query: args.query })
+      if (args.use_uploaded_image && !uploadedImage) {
+        return { content: [{ type: "text", text: "No image was uploaded in this conversation — use a text query instead." }] }
+      }
+      const searchByImage = Boolean(args.use_uploaded_image && uploadedImage)
+      if (!searchByImage && !args.query) {
+        return { content: [{ type: "text", text: "Provide a text query, or set use_uploaded_image:true when the user uploaded an image." }] }
+      }
+      // Text and image can be combined in one query for joint image+text retrieval.
+      const queryObj = {}
+      if (searchByImage) queryObj.image = uploadedImage
+      if (args.query) queryObj.text = args.query
+      const label = searchByImage && args.query ? `${args.query} + uploaded image` : args.query || "uploaded image"
+      onEvent("searching", { query: label })
       const resp = await fetch(`${SEARCH_URL}/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ queries: [{ text: args.query }], n_docs: args.n_results ?? 5 }),
+        body: JSON.stringify({ queries: [queryObj], n_docs: args.n_results ?? 5 }),
       })
       if (!resp.ok) {
         return { content: [{ type: "text", text: `Search API error: ${resp.status}` }] }
@@ -99,9 +114,9 @@ function createTools(onEvent) {
           chunk_index: h.chunk_index,
         }
       })
-      onEvent("search_results", { query: args.query, hits })
+      onEvent("search_results", { query: label, hits })
       return {
-        content: [{ type: "text", text: JSON.stringify({ query: args.query, results, count: results.length }, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify({ query: label, results, count: results.length }, null, 2) }],
       }
     }
   )
@@ -222,7 +237,8 @@ const server = http.createServer(async (req, res) => {
     })
 
     const send = (event, data) => res.write(sse(event, data))
-    const tools = createTools(send)
+    const uploadedImage = last?.image && typeof last.image === "string" ? last.image : null
+    const tools = createTools(send, uploadedImage)
     const mcpServer = createSdkMcpServer({ name: "pixelrag", version: "1.0.0", tools })
 
     inFlight++
