@@ -6,14 +6,16 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { getHistory, clearHistory } from "@/lib/history"
 
-// Both modes take natural language — the embedding model is trained on it, and
-// it retrieves better than bare keywords.
+// Search mode shows a visual grid, so concrete subjects beat full questions:
+// "The Starry Night" surfaces a striking spread of different artists' starry-night
+// paintings, where a verbose question just repeats the same one. Ask mode (below)
+// stays conversational.
 const EXAMPLE_QUERIES = [
-  "What does Van Gogh's The Starry Night look like?",
-  "How is the periodic table laid out?",
-  "What does the Taj Mahal look like?",
-  "What is depicted in The Great Wave off Kanagawa?",
-  "兵马俑长什么样？",
+  "The Starry Night",
+  "Periodic table",
+  "Taj Mahal",
+  "The Great Wave off Kanagawa",
+  "兵马俑",
 ]
 
 const ASK_EXAMPLES = [
