@@ -540,12 +540,19 @@ def load(args):
 
         book = args.zim_book or _derive_kiwix_book(args.kiwix_url)
         if not book:
-            logger.warning("render-on-demand: could not derive kiwix book from %s "
-                           "(pass --zim-book)", args.kiwix_url)
+            logger.warning(
+                "render-on-demand: could not derive kiwix book from %s "
+                "(pass --zim-book)",
+                args.kiwix_url,
+            )
         cache = os.path.join(args.tiles_dir or "./tiles_cache", "_ondemand")
         _state["ondemand"] = OnDemandTiles(args.kiwix_url, book, cache)
-        logger.info("On-demand tile rendering enabled (kiwix=%s book=%s cache=%s)",
-                    args.kiwix_url, book, cache)
+        logger.info(
+            "On-demand tile rendering enabled (kiwix=%s book=%s cache=%s)",
+            args.kiwix_url,
+            book,
+            cache,
+        )
 
 
 def _derive_kiwix_book(kiwix_url: str) -> str:
@@ -564,8 +571,9 @@ def _derive_kiwix_book(kiwix_url: str) -> str:
         return ""
 
 
-def _ondemand_chunk_b64(article_id: int, tile_index: int, chunk_index: int,
-                        tile_height: int):
+def _ondemand_chunk_b64(
+    article_id: int, tile_index: int, chunk_index: int, tile_height: int
+):
     """Render+chunk the page on demand and return the chunk as base64 PNG."""
     od = _state.get("ondemand")
     if od is None:
@@ -614,16 +622,19 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=30001)
     parser.add_argument(
-        "--render-on-demand", action="store_true",
+        "--render-on-demand",
+        action="store_true",
         help="Render tile images on demand from a kiwix ZIM (no materialized tiles/ dir). "
-             "Requires a running kiwix-serve (see --kiwix-url).",
+        "Requires a running kiwix-serve (see --kiwix-url).",
     )
     parser.add_argument(
-        "--kiwix-url", default=os.environ.get("PIXELRAG_KIWIX_URL", "http://localhost:30900"),
+        "--kiwix-url",
+        default=os.environ.get("PIXELRAG_KIWIX_URL", "http://localhost:30900"),
         help="Base URL of a running kiwix-serve, for --render-on-demand",
     )
     parser.add_argument(
-        "--zim-book", default=os.environ.get("PIXELRAG_ZIM_BOOK"),
+        "--zim-book",
+        default=os.environ.get("PIXELRAG_ZIM_BOOK"),
         help="kiwix book id for /content/<book>/ (auto-derived from --kiwix-url if omitted)",
     )
     args = parser.parse_args()
