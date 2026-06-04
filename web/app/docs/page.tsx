@@ -67,6 +67,28 @@ const endpoints: Endpoint[] = [
     defaultBody: JSON.stringify({ queries: [{ text: "solar system" }], n_docs: 5 }, null, 2),
   },
   {
+    id: "tile",
+    method: "GET",
+    path: "/tile/{article_id}/{tile_index}/{chunk_index}",
+    summary: "Retrieve a tile image",
+    description:
+      "Fetches the screenshot image for a /search hit — pass the article_id, tile_index, and chunk_index straight from a search result. Returns PNG binary data; embed it with an <img> tag. The example below is the top of the Albert Einstein article.",
+    requestFields: [
+      { name: "article_id", type: "number", required: true, description: "Wikipedia article ID" },
+      { name: "tile_index", type: "number", required: true, description: "Which 8192px tile (0-based)" },
+      { name: "chunk_index", type: "number", required: true, description: "Which 1024px chunk within tile (0-based)" },
+    ],
+    responseFields: [
+      { name: "(binary)", type: "image/png", required: true, description: "PNG image data" },
+    ],
+    curlPrefix: `curl https://pixelrag.ai/api/tile`,
+    defaultParams: "article_id=698618&tile_index=0&chunk_index=0",
+    buildPath: (_body, params) => {
+      const p = new URLSearchParams(params)
+      return `/tile/${p.get("article_id") || "698618"}/${p.get("tile_index") || "0"}/${p.get("chunk_index") || "0"}`
+    },
+  },
+  {
     id: "status",
     method: "GET",
     path: "/status",
@@ -86,28 +108,6 @@ const endpoints: Endpoint[] = [
       { name: "metadata_size_bytes", type: "number", required: true, description: "Metadata NPZ size" },
     ],
     curlPrefix: `curl https://pixelrag.ai/api/status`,
-  },
-  {
-    id: "tile",
-    method: "GET",
-    path: "/tile/2840114/0/0",
-    summary: "Retrieve a tile image",
-    description:
-      "Fetches the screenshot image for a /search hit — pass the article_id, tile_index, and chunk_index straight from a search result. Returns PNG binary data; embed it with an <img> tag. The example below is the top of the Albert Einstein article.",
-    requestFields: [
-      { name: "article_id", type: "number", required: true, description: "Wikipedia article ID" },
-      { name: "tile_index", type: "number", required: true, description: "Which 8192px tile (0-based)" },
-      { name: "chunk_index", type: "number", required: true, description: "Which 1024px chunk within tile (0-based)" },
-    ],
-    responseFields: [
-      { name: "(binary)", type: "image/png", required: true, description: "PNG image data" },
-    ],
-    curlPrefix: `curl https://pixelrag.ai/api/tile`,
-    defaultParams: "article_id=2840114&tile_index=0&chunk_index=0",
-    buildPath: (_body, params) => {
-      const p = new URLSearchParams(params)
-      return `/tile/${p.get("article_id") || "2840114"}/${p.get("tile_index") || "0"}/${p.get("chunk_index") || "0"}`
-    },
   },
   {
     id: "health",
@@ -364,15 +364,20 @@ function OverviewSection({ onSelect }: { onSelect: (id: string) => void }) {
         Search, then fetch the top hit&apos;s screenshot:
       </p>
       <ShellBlock
-        code={`# 1 — search (text or image query)
+        code={`# 1 — search with a text query
 curl -X POST https://pixelrag.ai/api/search \\
   -H "Content-Type: application/json" \\
   -d '{"queries": [{"text": "How does photosynthesis work?"}], "n_docs": 5}'
 
-# → hits[0] = { "article_id": 2840114, "tile_index": 0, "chunk_index": 0, ... }
+# → hits[0] = { "article_id": 5878188, "tile_index": 1, "chunk_index": 0, ... }
 
 # 2 — fetch that hit's screenshot
-curl https://pixelrag.ai/api/tile/2840114/0/0 --output tile.png`}
+curl https://pixelrag.ai/api/tile/5878188/1/0 --output tile.png
+
+# 3 — or search with an image: base64-encode any local file inline
+curl -X POST https://pixelrag.ai/api/search \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"queries\\": [{\\"image\\": \\"$(base64 < photo.jpg | tr -d '\\n')\\"}], \\"n_docs\\": 5}"`}
       />
 
       <h2 className="mt-10 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
