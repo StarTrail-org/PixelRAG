@@ -385,7 +385,7 @@ curl -X POST https://pixelrag.ai/api/search \\
       </h2>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
         <Code>https://pixelrag.ai/api</Code> — or query the index server directly at{" "}
-        <Code>http://api.pixelrag.ai:30001</Code>.
+        <Code>https://api.pixelrag.ai</Code>.
       </p>
 
       <h2 className="mt-10 text-xs font-semibold uppercase tracking-wider text-muted-foreground">

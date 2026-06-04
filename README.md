@@ -46,12 +46,12 @@ The two core operations — **render** a page to screenshots, **search** a visua
 pixelshot https://en.wikipedia.org/wiki/Python --output ./tiles
 
 # Search a hosted index of 8.28M Wikipedia pages — no setup, runs against the live API
-curl -X POST http://api.pixelrag.ai:30001/search \
+curl -X POST https://api.pixelrag.ai/search \
   -H "Content-Type: application/json" \
   -d '{"queries": [{"text": "What is the capital of France?"}], "n_docs": 5}'
 ```
 
-> **Live, hosted endpoint** — [`http://api.pixelrag.ai:30001`](http://api.pixelrag.ai:30001/status) serves a
+> **Live, hosted endpoint** — [`https://api.pixelrag.ai`](https://api.pixelrag.ai/status) serves a
 > pre-built index of **8.28M Wikipedia pages**. No setup, no API key. It even takes an image as the query
 > ([visual search](https://pixelrag.ai/docs#search)) — see the **[API reference →](https://pixelrag.ai/docs)**.
 
