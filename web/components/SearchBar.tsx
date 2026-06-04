@@ -6,10 +6,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { getHistory, clearHistory } from "@/lib/history"
 
-// Search mode shows a visual grid, so concrete subjects beat full questions:
-// "The Starry Night" surfaces a striking spread of different artists' starry-night
-// paintings, where a verbose question just repeats the same one. Ask mode (below)
-// stays conversational.
+// The embedding model is trained on natural-language questions (SimpleQA-style),
+// which retrieve the target page most precisely — Ask mode leans on that. The
+// search grid deliberately uses bare, slightly ambiguous titles instead: "The
+// Starry Night" fans out to Van Gogh + Munch + Millet + the Dutch Sterrennacht,
+// a far more striking visual spread than one painting repeated five times.
 const EXAMPLE_QUERIES = [
   "The Starry Night",
   "Periodic table",
