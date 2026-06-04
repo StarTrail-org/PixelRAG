@@ -16,7 +16,7 @@ const EXAMPLE_QUERIES = [
   "Periodic table",
   "Taj Mahal",
   "The Great Wave off Kanagawa",
-  "兵马俑",
+  "清明上河图",
 ]
 
 // The first two are verified "ChatGPT gets these wrong" questions: the answers
