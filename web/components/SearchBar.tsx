@@ -19,10 +19,13 @@ const EXAMPLE_QUERIES = [
   "兵马俑",
 ]
 
+// The first two are verified "ChatGPT gets these wrong" questions: the answers
+// live in table/infobox cells (match-stats table, RTO code box) that parametric
+// memory and text scraping both fumble — but reading the rendered page nails.
 const ASK_EXAMPLES = [
+  "How many shots on target did Inter have in the 2010 Champions League final?",
+  "Which district in Nagaland has the RTO code NL-03?",
   "Explain Van Gogh's The Starry Night",
-  "How do you read the periodic table?",
-  "Tell me about the Taj Mahal",
   "介绍一下兵马俑",
 ]
 

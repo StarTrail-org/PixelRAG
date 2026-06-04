@@ -56,9 +56,9 @@ interface ChatMessage {
 }
 
 const EXAMPLES = [
-  { q: "Explain Van Gogh's The Starry Night", icon: "01" },
-  { q: "How do you read the periodic table?", icon: "02" },
-  { q: "Tell me about the Taj Mahal", icon: "03" },
+  { q: "How many shots on target did Inter have in the 2010 Champions League final?", icon: "01" },
+  { q: "Which district in Nagaland has the RTO code NL-03?", icon: "02" },
+  { q: "Explain Van Gogh's The Starry Night", icon: "03" },
   { q: "介绍一下兵马俑", icon: "04" },
 ]
 
