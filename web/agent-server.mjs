@@ -73,7 +73,7 @@ function log(...args) {
 function createTools(onEvent, uploadedImage) {
   const searchTool = tool(
     "pixelrag_search",
-    "Search the visual Wikipedia index by text OR by the image the user uploaded. Returns ranked results with article URLs and tile positions. Use this first to find relevant articles, then use pixelrag_tile to view specific tiles.",
+    "Search the visual Wikipedia index by text OR by the image the user uploaded. Returns ranked results with article URLs, tile positions, and `pages` — the article's valid tile:chunk ranges (e.g. '0:0-7,1:0-4' = tile 0 has chunks 0-7, tile 1 has chunks 0-4). Use this first, then pixelrag_tile to view tiles.",
     {
       query: z.string().optional().describe("Natural language search query. Omit only when searching purely by an uploaded image."),
       use_uploaded_image: z.boolean().optional().describe("Set true to search the index BY the image the user uploaded (visual similarity). Requires an image in this conversation."),
@@ -112,6 +112,7 @@ function createTools(onEvent, uploadedImage) {
           article_id: h.article_id,
           tile_index: h.tile_index,
           chunk_index: h.chunk_index,
+          pages: h.article_pages,
         }
       })
       onEvent("search_results", { query: label, hits })
@@ -123,7 +124,7 @@ function createTools(onEvent, uploadedImage) {
 
   const tileTool = tool(
     "pixelrag_tile",
-    "View a Wikipedia screenshot tile by its coordinates. Returns the tile as an image so you can read the visual content. Use after pixelrag_search to read the actual article content.",
+    "View a Wikipedia screenshot tile by its coordinates. Returns the tile as an image so you can read the visual content. Only request coordinates within the article's `pages` ranges from search results (e.g. pages '0:0-7,1:0-4' means tile 1 ends at chunk 4) — coordinates beyond them do not exist.",
     {
       article_id: z.number().int().describe("Article ID from search results"),
       tile_index: z.number().int().describe("Tile index from search results"),

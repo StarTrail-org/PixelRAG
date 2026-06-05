@@ -33,6 +33,7 @@ Usage:
 
 import argparse
 import base64
+import functools
 import io
 import json
 import logging
@@ -115,6 +116,10 @@ class Hit(BaseModel):
     tile_height: int
     path: str
     url: str
+    # Which (tile, chunk) coordinates actually exist on disk for this article,
+    # e.g. "0:0-8,1:0-4" — lets agents page through an article without
+    # guessing coordinates past its end.
+    article_pages: str | None = None
     image_base64: str | None = None
 
 
@@ -291,6 +296,30 @@ def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
     )
 
 
+@functools.lru_cache(maxsize=8192)
+def _article_pages(article_id: int) -> str | None:
+    """Map of chunk files that exist on disk for an article: "0:0-8,1:0-4".
+
+    Lets clients (notably the chat agent) page through an article without
+    probing nonexistent coordinates. Returns None when tiles are rendered
+    on demand (no files on disk) or the article dir can't be found.
+    """
+    if _state.get("ondemand") is not None:
+        return None
+    probe = _resolve_path(article_id, 0, 0)
+    d = os.path.dirname(probe)
+    if not os.path.isdir(d):
+        return None
+    tiles: dict[int, list[int]] = {}
+    for name in os.listdir(d):
+        m = re.match(r"chunk_(\d{4})_(\d{2})\.(?:png|jpg|jpeg)$", name)
+        if m:
+            tiles.setdefault(int(m.group(1)), []).append(int(m.group(2)))
+    if not tiles:
+        return None
+    return ",".join(f"{t}:{min(cs)}-{max(cs)}" for t, cs in sorted(tiles.items()))
+
+
 def _resolve_url(article_id: int) -> str:
     """Resolve URL or title from article_id."""
     articles = _state["articles"]
@@ -394,6 +423,7 @@ async def search(req: SearchRequest):
                     tile_height=th,
                     path=rel_path,
                     url=url,
+                    article_pages=_article_pages(aid),
                     image_base64=img_b64,
                 )
             )
