@@ -87,9 +87,13 @@ function SearchPageContent() {
         addHistory(query)
       }
 
-      // Update URL with query param
+      // Push the results page as its own history entry so the browser back
+      // button returns to the clean search page (not whatever preceded it,
+      // e.g. /chat). lastRunQuery guards the searchParams effect below from
+      // re-running the search we just did.
       if (query) {
-        router.replace(`?q=${encodeURIComponent(query)}`, { scroll: false })
+        lastRunQuery.current = query
+        router.push(`?q=${encodeURIComponent(query)}`, { scroll: false })
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed")
@@ -115,17 +119,30 @@ function SearchPageContent() {
     setSelectedHits(new Set())
     setShowCompare(false)
     setLightboxHit(null)
-    router.replace("/", { scroll: false })
+    router.push("/", { scroll: false })
   }
 
-  // Auto-search if q param is present on mount
+  // The URL's ?q= drives search state, so back/forward work naturally:
+  // arriving at ?q= (mount, forward, or back) runs that search; navigating
+  // back to "/" clears the results.
+  const lastRunQuery = React.useRef<string | null>(null)
   React.useEffect(() => {
-    if (initialQuery) {
-      handleSearchRef.current?.(initialQuery)
+    const q = searchParams.get("q")
+    if (q && q !== lastRunQuery.current) {
+      lastRunQuery.current = q
+      handleSearchRef.current?.(q)
+    } else if (!q && lastRunQuery.current) {
+      lastRunQuery.current = null
+      setGroups([])
+      setAllHits([])
+      setResultMeta(null)
+      setError(null)
+      setHasSearched(false)
+      setSelectedHits(new Set())
+      setShowCompare(false)
+      setLightboxHit(null)
     }
-    // Only run on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [searchParams])
 
   function handleSelectHit(hit: Hit) {
     setSelectedHits((prev) => {
