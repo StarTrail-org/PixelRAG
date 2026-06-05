@@ -131,10 +131,13 @@ function createTools(onEvent, uploadedImage) {
     },
     async (args) => {
       const tileUrl = `${SEARCH_URL}/tile/${args.article_id}/${args.tile_index}/${args.chunk_index}`
-      onEvent("viewing_tile", { article_id: args.article_id, tile_index: args.tile_index, chunk_index: args.chunk_index })
       try {
         const resp = await fetch(tileUrl)
+        // The agent pages through articles by guessing chunk coordinates, so
+        // 404s are normal exploration — only surface tiles that actually load,
+        // otherwise the chat gallery renders broken images.
         if (!resp.ok) return { content: [{ type: "text", text: `Tile not found: ${resp.status}` }] }
+        onEvent("viewing_tile", { article_id: args.article_id, tile_index: args.tile_index, chunk_index: args.chunk_index })
         const buffer = await resp.arrayBuffer()
         const base64 = Buffer.from(buffer).toString("base64")
         const mimeType = resp.headers.get("content-type") || "image/png"

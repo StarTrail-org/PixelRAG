@@ -158,14 +158,17 @@ function createTools(
     async (args) => {
       const tileUrl = `${SEARCH_URL}/tile/${args.article_id}/${args.tile_index}/${args.chunk_index}`
 
-      onEvent("viewing_tile", {
-        article_id: args.article_id,
-        tile_index: args.tile_index,
-        chunk_index: args.chunk_index,
-      })
-
       try {
         const resp = await fetch(tileUrl)
+        // Only surface successfully fetched tiles — the agent pages through
+        // articles by guessing chunk coordinates, so 404s are normal.
+        if (resp.ok) {
+          onEvent("viewing_tile", {
+            article_id: args.article_id,
+            tile_index: args.tile_index,
+            chunk_index: args.chunk_index,
+          })
+        }
         if (!resp.ok) {
           return {
             content: [

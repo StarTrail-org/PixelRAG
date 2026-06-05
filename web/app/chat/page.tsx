@@ -565,7 +565,12 @@ const READING_VERBS = [
 ]
 
 function TileGallery({ tiles, loading }: { tiles: TileView[]; loading?: boolean }) {
-  const n = tiles.length
+  // Belt-and-braces: if a tile image 404s anyway, drop it from the gallery
+  // instead of rendering a broken image.
+  const [failed, setFailed] = React.useState<Set<string>>(new Set())
+  const key = (t: TileView) => `${t.article_id}/${t.tile_index}/${t.chunk_index}`
+  const shown = tiles.filter((t) => !failed.has(key(t)))
+  const n = shown.length
   // Seed by the first tile so the verb stays put as more tiles stream in,
   // but differs from answer to answer.
   const verb = READING_VERBS[(tiles[0]?.article_id ?? n) % READING_VERBS.length]
@@ -579,13 +584,13 @@ function TileGallery({ tiles, loading }: { tiles: TileView[]; loading?: boolean 
         {loading && <Loader2 className="h-3 w-3 animate-spin text-[var(--chat-warm)]" />}
       </div>
       <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-thin">
-        {tiles.map((t, i) => (
+        {shown.map((t, i) => (
           <motion.a key={i} href={tileUrl(t)} target="_blank" rel="noopener noreferrer"
             title="Open full-size tile (right-click to copy or save)"
             initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.08 }}
             className="group/tile relative block shrink-0 overflow-hidden rounded-xl border-2 border-[var(--chat-warm)] border-opacity-20 shadow-lg shadow-[var(--chat-warm)]/5">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={tileUrl(t)} alt={`Tile ${t.article_id}/${t.tile_index}/${t.chunk_index}`} className="h-48 w-80 object-cover object-top transition-transform duration-300 group-hover/tile:scale-[1.02]" loading="lazy" />
+            <img src={tileUrl(t)} alt={`Tile ${t.article_id}/${t.tile_index}/${t.chunk_index}`} className="h-48 w-80 object-cover object-top transition-transform duration-300 group-hover/tile:scale-[1.02]" loading="lazy" onError={() => setFailed((prev) => new Set(prev).add(key(t)))} />
             <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded-md bg-black/55 px-2 py-1 text-[10px] font-medium text-white opacity-0 backdrop-blur-sm transition-opacity group-hover/tile:opacity-100">
               <Maximize2 className="h-2.5 w-2.5" /> Open
             </div>
