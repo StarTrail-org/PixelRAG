@@ -343,7 +343,7 @@ function EmptyState({ onExample, onSearchMode }: { onExample: (q: string) => voi
       </motion.div>
 
       {/* Examples */}
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }} className="relative z-10 mt-8 grid w-full max-w-lg grid-cols-2 gap-3">
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }} className="relative z-10 mt-8 grid w-full max-w-lg grid-cols-1 gap-3 sm:grid-cols-2">
         {EXAMPLES.map(({ q, icon }) => (
           <button
             key={q}

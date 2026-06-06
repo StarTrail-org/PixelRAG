@@ -43,26 +43,26 @@ export default function RootLayout({
       <body>
         <ThemeProvider>
           <nav className="sticky top-0 z-50 bg-background/70 backdrop-blur-xl">
-            <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
+            <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6">
               {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-              <a href="/" className="group flex items-center gap-3.5">
+              <a href="/" className="group flex shrink-0 items-center gap-2 sm:gap-3.5">
                 {/* Logo mark — PixelRAG cat (inverts to white in dark mode) */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src="/logo.png"
                   alt=""
-                  className="h-9 w-auto transition-transform duration-300 group-hover:scale-105 dark:invert"
+                  className="h-7 w-auto transition-transform duration-300 group-hover:scale-105 dark:invert sm:h-9"
                 />
                 <span className="flex items-baseline gap-0.5">
-                  <span className="font-display text-2xl font-semibold tracking-tight">
+                  <span className="font-display text-xl font-semibold tracking-tight sm:text-2xl">
                     Pixel
                   </span>
-                  <span className="font-display text-2xl font-semibold tracking-tight text-primary">
+                  <span className="font-display text-xl font-semibold tracking-tight text-primary sm:text-2xl">
                     RAG
                   </span>
                 </span>
               </a>
-              <div className="flex items-center gap-4">
+              <div className="flex min-w-0 items-center gap-3 sm:gap-4">
                 <NavLinks />
                 <a
                   href="https://github.com/StarTrail-org/PixelRAG"

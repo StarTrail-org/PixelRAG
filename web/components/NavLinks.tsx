@@ -14,7 +14,7 @@ export function NavLinks() {
   const pathname = usePathname()
 
   return (
-    <div className="flex items-center gap-6">
+    <div className="flex items-center gap-3 sm:gap-6">
       {links.map(({ href, label }) => {
         const isActive =
           href === "/" ? pathname === "/" : pathname.startsWith(href)
@@ -22,7 +22,7 @@ export function NavLinks() {
           <Link
             key={href}
             href={href}
-            className={`text-sm transition-colors hover:text-foreground ${
+            className={`whitespace-nowrap text-sm transition-colors hover:text-foreground ${
               isActive
                 ? "nav-link-active text-foreground"
                 : "text-muted-foreground"
@@ -38,7 +38,7 @@ export function NavLinks() {
         href="https://status.pixelrag.ai"
         target="_blank"
         rel="noopener noreferrer"
-        className="flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        className="hidden items-center gap-1 whitespace-nowrap text-sm text-muted-foreground transition-colors hover:text-foreground sm:flex"
       >
         Status
         <ExternalLink className="h-3 w-3" />

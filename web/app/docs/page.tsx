@@ -136,7 +136,7 @@ export default function DocsPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-6xl gap-0 px-6 py-10">
+    <div className="mx-auto flex max-w-6xl flex-col gap-0 px-4 py-8 sm:px-6 md:flex-row md:py-10">
       {/* Sidebar */}
       <aside className="hidden w-56 shrink-0 pr-6 md:block">
         <nav className="mb-6 space-y-1">
