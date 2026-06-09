@@ -56,8 +56,9 @@ curl -X POST https://api.pixelrag.ai/search \
 > pre-built index of **8.28M Wikipedia pages**. No setup, no API key. It even takes an image as the query
 > ([visual search](https://pixelrag.ai/docs#search)) — see the **[API reference →](https://pixelrag.ai/docs)**.
 
-Or try it in the browser at **[pixelrag.ai](https://pixelrag.ai)**, or run the
-[demo notebook](demos/quickstart.ipynb) (renders + searches, with the images inline).
+Or try it in the browser at **[pixelrag.ai](https://pixelrag.ai)**, or run the demo notebook in
+Colab [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/StarTrail-org/PixelRAG/blob/main/demos/quickstart.ipynb) — it
+renders a page and searches the hosted index, with the images inline.
 
 ## What it is
 
