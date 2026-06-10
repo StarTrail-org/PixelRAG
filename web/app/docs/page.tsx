@@ -377,7 +377,12 @@ curl https://pixelrag.ai/api/tile/5878188/1/0 --output tile.png
 # 3 — or search with an image: base64-encode any local file inline
 curl -X POST https://pixelrag.ai/api/search \\
   -H "Content-Type: application/json" \\
-  -d "{\\"queries\\": [{\\"image\\": \\"$(base64 < photo.jpg | tr -d '\\n')\\"}], \\"n_docs\\": 5}"`}
+  -d "{\\"queries\\": [{\\"image\\": \\"$(base64 < photo.jpg | tr -d '\\n')\\"}], \\"n_docs\\": 5}"
+
+# 4 — hybrid: combine text + image in one query (joint multimodal retrieval)
+curl -X POST https://pixelrag.ai/api/search \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"queries\\": [{\\"text\\": \\"impressionist oil painting\\", \\"image\\": \\"$(base64 < photo.jpg | tr -d '\\n')\\"}], \\"n_docs\\": 5}"`}
       />
 
       <h2 className="mt-10 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
