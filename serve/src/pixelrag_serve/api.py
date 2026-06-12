@@ -112,10 +112,9 @@ async def _request_id_middleware(request: Request, call_next):
     correlate client-side and server-side traces.
     """
     incoming = request.headers.get("X-Request-ID")
-    req_id = (
-        _sanitize_request_id(incoming) if incoming
-        else uuid.uuid4().hex[:16]
-    )
+    # A malformed incoming ID sanitises to None — fall back to a fresh ID
+    # rather than letting None reach the ContextVar / response header.
+    req_id = (incoming and _sanitize_request_id(incoming)) or uuid.uuid4().hex[:16]
     token = _request_id_ctx.set(req_id)
     try:
         response: Response = await call_next(request)
@@ -123,6 +122,7 @@ async def _request_id_middleware(request: Request, call_next):
         return response
     finally:
         _request_id_ctx.reset(token)
+
 
 # Global state loaded at startup
 _state = {}
