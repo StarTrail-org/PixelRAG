@@ -33,6 +33,7 @@ Usage:
 
 import argparse
 import base64
+import contextvars
 import functools
 import io
 import json
@@ -40,19 +41,33 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 
 import faiss
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
+_request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="-"
+)
+
+
+class _RequestIDFilter(logging.Filter):
+    def filter(self, record):
+        record.req = _request_id_ctx.get()
+        return True
+
+
 logger = logging.getLogger("search_api")
+logger.addFilter(_RequestIDFilter())
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: [%(req)s] %(message)s",
 )
 
 app = FastAPI(title="PixelRAG Search API")
@@ -64,6 +79,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    token = _request_id_ctx.set(req_id)
+    try:
+        response: Response = await call_next(request)
+    finally:
+        _request_id_ctx.reset(token)
+    response.headers["X-Request-ID"] = req_id
+    return response
 
 # Global state loaded at startup
 _state = {}
