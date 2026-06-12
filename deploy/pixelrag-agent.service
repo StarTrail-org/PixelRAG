@@ -22,5 +22,10 @@ RestartSec=3
 StandardOutput=append:/home/yichuan/visrag/logs/agent-server.log
 StandardError=append:/home/yichuan/visrag/logs/agent-server.log
 
+# 防止服务被攻破后横向移动
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+
 [Install]
 WantedBy=multi-user.target
