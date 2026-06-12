@@ -1,0 +1,28 @@
+[Unit]
+Description=PixelRAG Search API (%I slot)
+After=network.target
+
+[Service]
+Type=simple
+User=yichuan
+Group=yichuan
+EnvironmentFile=-/etc/pixelrag/api-%I.env
+ExecStart=/home/yichuan/visrag/.venv/bin/pixelrag serve \
+    --index-dir ${INDEX_DIR} \
+    --tiles-dir ${TILES_DIR} \
+    --articles-json ${ARTICLES_JSON} \
+    --model ${MODEL} \
+    --device ${DEVICE:-cpu} \
+    --port ${PORT}
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 防止服务被攻破后横向移动
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
