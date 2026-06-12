@@ -1,0 +1,27 @@
+[Unit]
+Description=PixelRAG Search API (green slot — LoRA model)
+After=network.target
+
+[Service]
+Type=simple
+User=yichuan
+WorkingDirectory=%h/visrag
+ExecStart=%h/visrag/.venv/bin/pixelrag serve \
+    --index-dir %h/visrag-data/search_index_lora_vit_ckpt200_v2 \
+    --tiles-dir %h/visrag-data/tiles \
+    --articles-json %h/visrag-data/articles.json \
+    --model %h/visrag-data/models/Qwen3-VL-Embedding-2B-lora-vit-ckpt200 \
+    --device cpu \
+    --port 30002
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 防止服务被攻破后横向移动
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

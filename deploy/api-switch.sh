@@ -3,22 +3,16 @@
 #
 # Points BOTH api.pixelrag.ai (via nginx) and the agent backend (direct on
 # localhost) at the chosen slot, but only after the target passes a health
-# check and a smoke query. Rollback is just switching back to the other slot.
+# check and a smoke query. Rollback is just switching back to the other port.
 #
-#   blue  = base model   (pixelrag-api@blue.service)
-#   green = LoRA model   (pixelrag-api@green.service)
+#   blue  = 30001  (base model,  pixelrag-api.service)
+#   green = 30002  (LoRA model,  pixelrag-api-green.service)
 #
-# Usage: deploy/api-switch.sh <blue|green>
+# Usage: deploy/api-switch.sh <port>
 set -euo pipefail
-SLOT="${1:?usage: api-switch.sh <blue|green>}"
-ENV_FILE="/etc/pixelrag/api-${SLOT}.env"
+PORT="${1:?usage: api-switch.sh <port>  (30001=blue/base, 30002=green/lora)}"
 UPSTREAM=/etc/nginx/conf.d/pixelrag-api-upstream.conf
 AGENT_DROPIN=/etc/systemd/system/pixelrag-agent.service.d/backend.conf
-
-# Resolve port from the slot's env file.
-[ -f "$ENV_FILE" ] || { echo "ABORT: $ENV_FILE not found"; exit 1; }
-PORT=$(grep -oP '^PORT=\K\d+' "$ENV_FILE")
-[ -n "${PORT:-}" ] || { echo "ABORT: PORT not found in $ENV_FILE"; exit 1; }
 
 base="http://127.0.0.1:${PORT}"
 
@@ -44,4 +38,4 @@ printf '[Service]\nEnvironment=PIXELRAG_SEARCH_URL=http://localhost:%s\n' "$PORT
 sudo systemctl daemon-reload
 sudo systemctl restart pixelrag-agent.service
 
-echo "SWITCHED: api.pixelrag.ai + agent -> 127.0.0.1:${PORT} (slot=${SLOT})"
+echo "SWITCHED: api.pixelrag.ai + agent -> 127.0.0.1:${PORT}"

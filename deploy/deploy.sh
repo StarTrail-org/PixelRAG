@@ -52,7 +52,7 @@ fi
 # 3. Search API — restarting reloads a 216G index (minutes of downtime), so we
 #    NEVER auto-restart it. Just flag that a manual restart is needed.
 if changed '^serve/'; then
-  say "NOTICE: serve/ changed — 'sudo systemctl restart pixelrag-api@blue' needed manually (216G reload)"
+  say "NOTICE: serve/ changed — 'sudo systemctl restart pixelrag-api' needed manually (216G reload)"
 fi
 
 # The web frontend deploys via Vercel; nothing to do here for web/ changes
