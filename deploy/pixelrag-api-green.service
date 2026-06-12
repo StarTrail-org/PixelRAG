@@ -5,12 +5,12 @@ After=network.target
 [Service]
 Type=simple
 User=yichuan
-WorkingDirectory=/home/yichuan/visrag
-ExecStart=/home/yichuan/visrag/.venv/bin/pixelrag serve \
-    --index-dir /home/yichuan/visrag-data/search_index_lora_vit_ckpt200_v2 \
-    --tiles-dir /home/yichuan/visrag-data/tiles \
-    --articles-json /home/yichuan/visrag-data/articles.json \
-    --model /home/yichuan/visrag-data/models/Qwen3-VL-Embedding-2B-lora-vit-ckpt200 \
+WorkingDirectory=%h/visrag
+ExecStart=%h/visrag/.venv/bin/pixelrag serve \
+    --index-dir %h/visrag-data/search_index_lora_vit_ckpt200_v2 \
+    --tiles-dir %h/visrag-data/tiles \
+    --articles-json %h/visrag-data/articles.json \
+    --model %h/visrag-data/models/Qwen3-VL-Embedding-2B-lora-vit-ckpt200 \
     --device cpu \
     --port 30002
 Restart=always

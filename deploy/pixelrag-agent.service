@@ -7,8 +7,8 @@ Wants=network-online.target
 Type=simple
 User=yichuan
 Group=yichuan
-WorkingDirectory=/home/yichuan/visrag/web
-Environment=HOME=/home/yichuan
+WorkingDirectory=%h/visrag/web
+Environment=HOME=%h
 Environment=AGENT_PORT=30010
 Environment=PIXELRAG_SEARCH_URL=http://localhost:30001
 Environment=CHAT_MAX_BUDGET_USD=2.00
@@ -16,11 +16,11 @@ Environment=ALLOWED_ORIGIN=https://pixelrag.ai
 Environment=RL_PER_IP=12
 Environment=RL_GLOBAL_DAILY=500
 Environment=RL_MAX_CONCURRENT=3
-ExecStart=/home/yichuan/.nix-profile/bin/node /home/yichuan/visrag/web/agent-server.mjs
+ExecStart=%h/.nix-profile/bin/node %h/visrag/web/agent-server.mjs
 Restart=always
 RestartSec=3
-StandardOutput=append:/home/yichuan/visrag/logs/agent-server.log
-StandardError=append:/home/yichuan/visrag/logs/agent-server.log
+StandardOutput=append:%h/visrag/logs/agent-server.log
+StandardError=append:%h/visrag/logs/agent-server.log
 
 # 防止服务被攻破后横向移动
 NoNewPrivileges=yes

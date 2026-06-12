@@ -5,11 +5,11 @@ After=network.target
 [Service]
 Type=simple
 User=yichuan
-WorkingDirectory=/home/yichuan/visrag
-ExecStart=/home/yichuan/visrag/.venv/bin/pixelrag serve \
-    --index-dir /home/yichuan/visrag-data/search_index \
-    --tiles-dir /home/yichuan/visrag-data/tiles \
-    --articles-json /home/yichuan/visrag-data/articles.json \
+WorkingDirectory=%h/visrag
+ExecStart=%h/visrag/.venv/bin/pixelrag serve \
+    --index-dir %h/visrag-data/search_index \
+    --tiles-dir %h/visrag-data/tiles \
+    --articles-json %h/visrag-data/articles.json \
     --device cpu \
     --port 30001
 Restart=always
