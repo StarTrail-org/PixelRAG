@@ -13,6 +13,10 @@ allowed-tools: "Bash, Read"
 
 Use `pixelshot` to capture any URL or document as tiled JPEG images, then read the images visually.
 
+Requires the `pixelshot` command on `PATH`. If `pixelshot` is not found, install it
+(isolated, on `PATH`): `uv tool install pixelrag` (or `pipx install pixelrag`, or
+`pip install pixelrag`) — then retry. Don't go hunting for it in project venvs.
+
 ## How to use
 
 ```bash

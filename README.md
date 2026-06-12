@@ -73,10 +73,12 @@ The renderer also ships as a Claude Code plugin — the **pixelbrowse** skill. I
 raw HTML, Claude screenshots a page with `pixelshot` and _reads the image_, so it sees
 charts, diagrams, tables, and layout the way a person does.
 
-Install it — no clone needed (`pixelshot` comes from `pip install pixelrag`):
+Install it — no clone needed. Install the `pixelshot` CLI so it's on your `PATH`
+(use `uv tool` or `pipx` to keep it isolated yet always available to Claude — a
+plain `pip install` into a project venv may leave `pixelshot` off `PATH`):
 
 ```bash
-pip install pixelrag                                # provides the pixelshot command
+uv tool install pixelrag                            # pixelshot on PATH (or: pipx install pixelrag)
 claude plugin marketplace add StarTrail-org/PixelRAG
 claude plugin install pixelbrowse@pixelrag-plugins
 ```
