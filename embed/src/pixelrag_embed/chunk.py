@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Pre-chunk tile images into 1024px-height strips on disk.
+"""Pre-chunk tile images into model-sized pieces on disk.
 
-For each article directory (*.png.tiles/), reads every tile_XXXX.png,
-splits it into 1024px-tall chunks, writes chunk_XXXX_YY.png files,
-and saves a chunks.json manifest recording the mapping.
+For each article directory (*.png.tiles/), reads every tile_XXXX.png and splits
+it into a grid of <=1024px-tall x <=viewport_width-wide chunks (writing
+chunk_XXXX_YY.png files) plus a chunks.json manifest recording each chunk's
+x_offset/y_offset/width/height. Narrow web tiles (<= viewport_width) keep their
+old single-column height-strip layout; wider sources (PDFs, landscape pages) are
+also split along the width so the embedder never has to drop an oversized chunk.
 
 Usage:
     # Single shard
@@ -145,8 +148,9 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
             tile_base = tile_base.replace(ext, "")
         tile_idx = int(tile_base)
 
-        if h <= CHUNK_HEIGHT:
-            # No chunking needed — copy tile as chunk_XXXX_00.png
+        # Fast path: web tiles (<= viewport_width) that fit one strip are copied
+        # verbatim — byte-identical to the pre-2D-tiling behavior.
+        if w <= viewport_width and h <= CHUNK_HEIGHT:
             chunk_name = f"chunk_{tile_idx:04d}_00.png"
             chunk_path = os.path.join(article_dir, chunk_name)
             if not dry_run:
@@ -158,6 +162,7 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
                     "tile_index": tile_idx,
                     "chunk_index": 0,
                     "file": chunk_name,
+                    "x_offset": 0,
                     "y_offset": 0,
                     "height": h,
                     "width": w,
@@ -165,39 +170,48 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
             )
             continue
 
-        # Split into CHUNK_HEIGHT strips
-        y = 0
+        # 2D grid: CHUNK_HEIGHT-tall row strips x viewport_width-wide columns.
+        # Columns are a full viewport_width each (the model's native width) with
+        # the remainder in the last column — not evened out — so most content
+        # lands at the in-distribution width the index was built on. chunk_index
+        # is a flat row-major counter, so single-column tiles keep the same
+        # 0, 1, 2, ... order (and identical crops) as before.
         chunk_idx = 0
+        y = 0
         while y < h:
-            remaining = h - y
-            ch = min(CHUNK_HEIGHT, remaining)
-
-            # Discard tiny tail chunks (< 28px = one Qwen3-VL patch)
+            ch = min(CHUNK_HEIGHT, h - y)
+            # Discard tiny height tail (< 28px = one Qwen3-VL patch)
             if ch < MIN_CHUNK_HEIGHT:
                 break
 
-            chunk_name = f"chunk_{tile_idx:04d}_{chunk_idx:02d}.png"
-            chunk_path = os.path.join(article_dir, chunk_name)
+            x = 0
+            while x < w:
+                cw = min(viewport_width, w - x)
+                if cw < MIN_CHUNK_HEIGHT:  # discard tiny right-edge sliver
+                    break
 
-            if not dry_run:
-                crop = img.crop((0, y, w, y + ch))
-                crop.save(chunk_path, format="PNG")
-                files_written += 1
+                chunk_name = f"chunk_{tile_idx:04d}_{chunk_idx:02d}.png"
+                chunk_path = os.path.join(article_dir, chunk_name)
+                if not dry_run:
+                    img.crop((x, y, x + cw, y + ch)).save(chunk_path, format="PNG")
+                    files_written += 1
 
-            chunks_info.append(
-                {
-                    "tile": tile_name,
-                    "tile_index": tile_idx,
-                    "chunk_index": chunk_idx,
-                    "file": chunk_name,
-                    "y_offset": y,
-                    "height": ch,
-                    "width": w,
-                }
-            )
+                chunks_info.append(
+                    {
+                        "tile": tile_name,
+                        "tile_index": tile_idx,
+                        "chunk_index": chunk_idx,
+                        "file": chunk_name,
+                        "x_offset": x,
+                        "y_offset": y,
+                        "height": ch,
+                        "width": cw,
+                    }
+                )
+                chunk_idx += 1
+                x += cw
 
             y += ch
-            chunk_idx += 1
 
         img.close()
 
