@@ -23,7 +23,7 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod"
 
 const PORT = parseInt(process.env.AGENT_PORT || "30010", 10)
-const SEARCH_URL = process.env.PIXELRAG_SEARCH_URL || "http://localhost:30001"
+const SEARCH_URL = process.env.PIXELRAG_SEARCH_URL || "https://api.pixelrag.ai"
 const MAX_BUDGET = parseFloat(process.env.CHAT_MAX_BUDGET_USD || "2.00")
 const THINKING_TOKENS = parseInt(process.env.CHAT_THINKING_TOKENS || "2000", 10)
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*"
@@ -63,7 +63,7 @@ For every user question, without exception:
 2. Call pixelrag_tile to VIEW the screenshot tiles of the top results — this is how you read and compare. View at least 2-3 tiles.
 3. Answer from what the tiles show, and cite the Wikipedia URLs. If the tiles don't contain the answer, say so honestly.
 
-Be decisive and efficient: for open-ended or comparison questions, check a few strong candidates (about 3-5), then commit to your best answer from what you have seen — do not keep searching indefinitely.
+Be decisive and efficient: view at most 4 tiles total across 1-2 articles, then commit to your best answer. If tiles are too small or blurry to read, say so and answer from the article titles/URLs. Do NOT keep retrying with different tiles or fall back to web search/fetch — you only have pixelrag_search and pixelrag_tile. Stop after 2 tile attempts that yield no readable text.
 
 Never skip search and tile — including for visual or comparison questions; always look at Wikipedia tiles first, even when you think you already know the answer.
 
@@ -100,6 +100,7 @@ function createTools(onEvent, uploadedImage) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ queries: [queryObj], n_docs: args.n_results ?? 5, articles_only: true }),
+        signal: AbortSignal.timeout(30000),
       })
       if (!resp.ok) {
         return { content: [{ type: "text", text: `Search API error: ${resp.status}` }] }
@@ -136,7 +137,7 @@ function createTools(onEvent, uploadedImage) {
     async (args) => {
       const tileUrl = `${SEARCH_URL}/tile/${args.article_id}/${args.tile_index}/${args.chunk_index}`
       try {
-        const resp = await fetch(tileUrl)
+        const resp = await fetch(tileUrl, { signal: AbortSignal.timeout(30000) })
         // The agent pages through articles by guessing chunk coordinates, so
         // 404s are normal exploration — only surface tiles that actually load,
         // otherwise the chat gallery renders broken images.
@@ -257,7 +258,7 @@ const server = http.createServer(async (req, res) => {
           systemPrompt: SYSTEM_PROMPT,
           mcpServers: { pixelrag: mcpServer },
           allowedTools: ["mcp__pixelrag__pixelrag_search", "mcp__pixelrag__pixelrag_tile"],
-          maxTurns: 20,
+          maxTurns: 8,
           maxBudgetUsd: MAX_BUDGET,
           maxThinkingTokens: THINKING_TOKENS,
           includePartialMessages: true,

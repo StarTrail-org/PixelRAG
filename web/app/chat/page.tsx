@@ -24,6 +24,8 @@ import remarkGfm from "remark-gfm"
 import { Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { ModeToggle } from "@/components/ModeToggle"
+import { Lightbox } from "@/components/Lightbox"
+import type { Hit } from "@/lib/types"
 
 interface SearchResult {
   query: string
@@ -69,6 +71,8 @@ function ChatPageInner() {
   const [input, setInput] = React.useState("")
   const [image, setImage] = React.useState<string | undefined>()
   const [isStreaming, setIsStreaming] = React.useState(false)
+  const [lightboxHit, setLightboxHit] = React.useState<Hit | null>(null)
+  const [lightboxHits, setLightboxHits] = React.useState<Hit[]>([])
   const messagesEndRef = React.useRef<HTMLDivElement>(null)
   const inputRef = React.useRef<HTMLTextAreaElement>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -116,8 +120,10 @@ function ChatPageInner() {
     const img = imageOverride ?? image
     if ((!query && !img) || isStreaming) return
     if (query) addHistory(query, "ask")
-    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: "user", content: query, image: img }
-    const assistantMsg: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", searches: [] }
+    const id1 = crypto.randomUUID?.() ?? "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16) })
+    const id2 = crypto.randomUUID?.() ?? "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16) })
+    const userMsg: ChatMessage = { id: id1, role: "user", content: query, image: img }
+    const assistantMsg: ChatMessage = { id: id2, role: "assistant", content: "", searches: [] }
     setMessages((prev) => [...prev, userMsg, assistantMsg])
     setInput("")
     setImage(undefined)
@@ -183,6 +189,11 @@ function ChatPageInner() {
     setMessages([]); setIsStreaming(false); setInput(""); setImage(undefined); inputRef.current?.focus()
   }
 
+  function handleTileClick(hit: Hit, allHits: Hit[]) {
+    setLightboxHit(hit)
+    setLightboxHits(allHits)
+  }
+
   function handleFile(file: File) {
     if (!file.type.startsWith("image/")) return
     const reader = new FileReader()
@@ -215,7 +226,7 @@ function ChatPageInner() {
             <AnimatePresence initial={false}>
               {messages.map((msg) => (
                 <motion.div key={msg.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
-                  {msg.role === "user" ? <UserMessage content={msg.content} image={msg.image} /> : <AssistantMessage message={msg} isStreaming={isStreaming && msg.id === messages[messages.length - 1]?.id} />}
+                  {msg.role === "user" ? <UserMessage content={msg.content} image={msg.image} /> : <AssistantMessage message={msg} isStreaming={isStreaming && msg.id === messages[messages.length - 1]?.id} onTileClick={handleTileClick} />}
                 </motion.div>
               ))}
             </AnimatePresence>
@@ -288,6 +299,17 @@ function ChatPageInner() {
           </div>
         </div>
       </div>
+
+      {/* Lightbox */}
+      {lightboxHit && (
+        <Lightbox
+          key={lightboxHit.vector_id}
+          hit={lightboxHit}
+          allHits={lightboxHits}
+          onClose={() => setLightboxHit(null)}
+          onNavigate={(hit) => setLightboxHit(hit)}
+        />
+      )}
     </div>
   )
 }
@@ -409,14 +431,14 @@ function UserMessage({ content, image }: { content: string; image?: string }) {
   )
 }
 
-function AssistantMessage({ message, isStreaming }: { message: ChatMessage; isStreaming: boolean }) {
+function AssistantMessage({ message, isStreaming, onTileClick }: { message: ChatMessage; isStreaming: boolean; onTileClick: (hit: Hit, allHits: Hit[]) => void }) {
   return (
     <div className="mb-8">
       {message.thinking && (
         <ThinkingTrace text={message.thinking} active={isStreaming && !message.content} />
       )}
-      {message.searches?.map((s, i) => <SearchCard key={i} result={s} />)}
-      {message.tiles && message.tiles.length > 0 && <TileGallery tiles={message.tiles} loading={message.viewingTile} />}
+      {message.searches?.map((s, i) => <SearchCard key={i} result={s} onTileClick={onTileClick} />)}
+      {message.tiles && message.tiles.length > 0 && <TileGallery tiles={message.tiles} loading={message.viewingTile} onTileClick={onTileClick} />}
 
       {message.searching && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-4 flex items-center gap-2.5 rounded-lg border border-[var(--chat-border)] bg-[var(--chat-card)] px-3.5 py-2.5">
@@ -449,9 +471,20 @@ function AssistantMessage({ message, isStreaming }: { message: ChatMessage; isSt
 
 /* ─── Search Card ─── */
 
-function SearchCard({ result }: { result: SearchResult }) {
+function SearchCard({ result, onTileClick }: { result: SearchResult; onTileClick: (hit: Hit, allHits: Hit[]) => void }) {
   const [expanded, setExpanded] = React.useState(false)
   const shown = expanded ? result.hits : result.hits.slice(0, 5)
+  const hits = result.hits.map((h) => ({
+    score: h.score,
+    article_id: h.article_id,
+    tile_index: h.tile_index,
+    chunk_index: h.chunk_index,
+    url: h.url,
+    tile_height: h.tile_height,
+    vector_id: h.article_id * 10000 + h.tile_index * 100 + h.chunk_index,
+    y_offset: 0,
+    path: "",
+  } as Hit))
 
   return (
     <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} className="mb-4 overflow-hidden rounded-xl border border-[var(--chat-border)] bg-[var(--chat-card)]">
@@ -464,9 +497,8 @@ function SearchCard({ result }: { result: SearchResult }) {
         {shown.map((hit, i) => {
           const slug = hit.url.includes("/wiki/") ? hit.url.split("/wiki/").pop() : hit.url
           const title = decodeURIComponent(slug || "").replace(/_/g, " ")
-          const fullUrl = hit.url.startsWith("http") ? hit.url : `https://en.wikipedia.org/wiki/${slug}`
           return (
-            <a key={i} href={fullUrl} target="_blank" rel="noopener noreferrer" className="group relative shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-[1.02]">
+            <button key={i} onClick={() => onTileClick(hits[i], hits)} className="group relative shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-[1.02]" title="Click to view full-size">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={tileUrl(hit)} alt={title} className="h-24 w-36 object-cover object-top" loading="lazy" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
@@ -474,7 +506,7 @@ function SearchCard({ result }: { result: SearchResult }) {
                 <span className="flex items-center gap-1 text-[10px] font-medium text-white"><span className="truncate">{title}</span><ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-60" /></span>
               </div>
               <div className="absolute right-1 top-1 rounded bg-black/60 px-1 py-0.5 font-mono text-[8px] tabular-nums text-white/60 backdrop-blur-sm">{hit.score.toFixed(2)}</div>
-            </a>
+            </button>
           )
         })}
       </div>
@@ -564,7 +596,7 @@ const READING_VERBS = [
   "Scanning",
 ]
 
-function TileGallery({ tiles, loading }: { tiles: TileView[]; loading?: boolean }) {
+function TileGallery({ tiles, loading, onTileClick }: { tiles: TileView[]; loading?: boolean; onTileClick: (hit: Hit, allHits: Hit[]) => void }) {
   // Belt-and-braces: if a tile image 404s anyway, drop it from the gallery
   // instead of rendering a broken image.
   const [failed, setFailed] = React.useState<Set<string>>(new Set())
@@ -574,6 +606,23 @@ function TileGallery({ tiles, loading }: { tiles: TileView[]; loading?: boolean 
   // Seed by the first tile so the verb stays put as more tiles stream in,
   // but differs from answer to answer.
   const verb = READING_VERBS[(tiles[0]?.article_id ?? n) % READING_VERBS.length]
+
+  function tileToHit(t: TileView): Hit {
+    return {
+      score: 0,
+      article_id: t.article_id,
+      tile_index: t.tile_index,
+      chunk_index: t.chunk_index,
+      url: `https://en.wikipedia.org/?curid=${t.article_id}`,
+      tile_height: 0,
+      vector_id: t.article_id * 10000 + t.tile_index * 100 + t.chunk_index,
+      y_offset: 0,
+      path: "",
+    }
+  }
+
+  const hits = shown.map(tileToHit)
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-5">
       <div className="mb-2.5 flex items-center gap-2">
@@ -585,10 +634,10 @@ function TileGallery({ tiles, loading }: { tiles: TileView[]; loading?: boolean 
       </div>
       <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-thin">
         {shown.map((t, i) => (
-          <motion.a key={i} href={tileUrl(t)} target="_blank" rel="noopener noreferrer"
-            title="Open full-size tile (right-click to copy or save)"
+          <motion.button key={i} onClick={() => onTileClick(hits[i], hits)}
+            title="Click to view full-size"
             initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.08 }}
-            className="group/tile relative block shrink-0 overflow-hidden rounded-xl border-2 border-[var(--chat-warm)] border-opacity-20 shadow-lg shadow-[var(--chat-warm)]/5">
+            className="group/tile relative block shrink-0 overflow-hidden rounded-xl border-2 border-[var(--chat-warm)] border-opacity-20 shadow-lg shadow-[var(--chat-warm)]/5 text-left">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={tileUrl(t)} alt={`Tile ${t.article_id}/${t.tile_index}/${t.chunk_index}`} className="h-48 w-80 object-cover object-top transition-transform duration-300 group-hover/tile:scale-[1.02]" loading="lazy" onError={() => setFailed((prev) => new Set(prev).add(key(t)))} />
             <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded-md bg-black/55 px-2 py-1 text-[10px] font-medium text-white opacity-0 backdrop-blur-sm transition-opacity group-hover/tile:opacity-100">
@@ -598,7 +647,7 @@ function TileGallery({ tiles, loading }: { tiles: TileView[]; loading?: boolean 
               <span className="relative flex h-1.5 w-1.5"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--chat-warm)] opacity-40" /><span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--chat-warm)]" /></span>
               <span className="font-mono text-[10px] tabular-nums text-[var(--chat-muted)]">{t.article_id}:{t.tile_index}:{t.chunk_index}</span>
             </div>
-          </motion.a>
+          </motion.button>
         ))}
       </div>
     </motion.div>
