@@ -111,6 +111,7 @@ def resolve_gpu_ids(gpu_ids_arg: str) -> list[int]:
 
 
 _RESIZE_FACTOR = 28  # Qwen3-VL patch alignment
+_MAX_CHUNK_WIDTH = 875  # web viewport width; wider images (e.g. PDF tiles) are resized
 
 
 def _smart_resize_pil(img: "Image.Image", max_pixels: int) -> "Image.Image":
@@ -122,6 +123,21 @@ def _smart_resize_pil(img: "Image.Image", max_pixels: int) -> "Image.Image":
     if w * h <= max_pixels:
         return img
     scale = (max_pixels / (w * h)) ** 0.5
+    new_w = max(round(w * scale / _RESIZE_FACTOR) * _RESIZE_FACTOR, _RESIZE_FACTOR)
+    new_h = max(round(h * scale / _RESIZE_FACTOR) * _RESIZE_FACTOR, _RESIZE_FACTOR)
+    return img.resize((new_w, new_h), Image.LANCZOS)
+
+
+def _clamp_width_pil(img: "Image.Image", max_width: int = _MAX_CHUNK_WIDTH) -> "Image.Image":
+    """Resize image so width <= max_width, preserving aspect ratio.
+
+    Dimensions are rounded to multiples of 28 (Qwen3-VL patch alignment).
+    Used for PDF tiles that render wider than the web viewport.
+    """
+    w, h = img.size
+    if w <= max_width:
+        return img
+    scale = max_width / w
     new_w = max(round(w * scale / _RESIZE_FACTOR) * _RESIZE_FACTOR, _RESIZE_FACTOR)
     new_h = max(round(h * scale / _RESIZE_FACTOR) * _RESIZE_FACTOR, _RESIZE_FACTOR)
     return img.resize((new_w, new_h), Image.LANCZOS)
@@ -881,7 +897,7 @@ def _embed_tile_infos_with_engine(
     unique_queue: queue.Queue = queue.Queue(maxsize=batch_size * 2)
     producer_error: list[Exception | None] = [None]
 
-    skipped_oversized = [0]  # mutable counter for threads
+    resized_wide = [0]  # mutable counter for threads
 
     def _io_producer() -> None:
         """Read tiles, chunk tall images, hash chunks, skip decode for duplicates."""
@@ -920,15 +936,14 @@ def _embed_tile_infos_with_engine(
                         cw / max(ch, 1),
                     )
                     continue
-                if cw > 875:
-                    logger.warning(
-                        "Skipping oversized chunk %s ci=%d width %d > 875",
-                        img_path,
-                        ci,
-                        cw,
+                if cw > _MAX_CHUNK_WIDTH:
+                    chunk_img = _clamp_width_pil(chunk_img, _MAX_CHUNK_WIDTH)
+                    cw, ch = chunk_img.size
+                    resized_wide[0] += 1
+                    logger.debug(
+                        "Resized wide chunk %s ci=%d to %dx%d",
+                        img_path, ci, cw, ch,
                     )
-                    skipped_oversized[0] += 1
-                    continue
                 # Dedup key: use file path for pre-chunked files (avoids
                 # expensive tobytes + MD5 on ~2.7MB raw pixels per chunk)
                 if isinstance(ti, ChunkInfo):
@@ -1056,15 +1071,16 @@ def _embed_tile_infos_with_engine(
 
     deduped = len(tile_hashes) - unique_total
     100.0 * deduped / len(tile_hashes) if tile_hashes else 0.0
-    n_skipped = skipped_oversized[0]
+    n_resized = resized_wide[0]
     logger.info(
-        "GPU %d: %d images, %d unique (%d deduped, %d skipped>875), embedded %d, pipeline %.2fs (%.1f chunks/s)"
+        "GPU %d: %d images, %d unique (%d deduped, %d resized>%d), embedded %d, pipeline %.2fs (%.1f chunks/s)"
         " | embed=%.2fs (%d batches) queue_wait=%.2fs first_item=%.3fs",
         gpu_id,
         len(tile_hashes),
         unique_total,
         deduped,
-        n_skipped,
+        n_resized,
+        _MAX_CHUNK_WIDTH,
         embedded,
         pipeline_s,
         embedded / pipeline_s if pipeline_s > 0 else 0,
