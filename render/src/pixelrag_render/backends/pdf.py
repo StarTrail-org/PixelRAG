@@ -90,15 +90,17 @@ def render_pdf(
         saved_tiles.append(tile_name)
         w, h = img.size
         # Each PDF page = one chunk (no further splitting)
-        chunks_info.append({
-            "tile": tile_name,
-            "tile_index": idx,
-            "chunk_index": 0,
-            "file": tile_name,
-            "y_offset": 0,
-            "height": h,
-            "width": w,
-        })
+        chunks_info.append(
+            {
+                "tile": tile_name,
+                "tile_index": idx,
+                "chunk_index": 0,
+                "file": tile_name,
+                "y_offset": 0,
+                "height": h,
+                "width": w,
+            }
+        )
         logger.debug("  Page %d → %s (%dx%d)", idx, tile_name, w, h)
 
     manifest = {

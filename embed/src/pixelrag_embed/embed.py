@@ -128,7 +128,9 @@ def _smart_resize_pil(img: "Image.Image", max_pixels: int) -> "Image.Image":
     return img.resize((new_w, new_h), Image.LANCZOS)
 
 
-def _clamp_width_pil(img: "Image.Image", max_width: int = _MAX_CHUNK_WIDTH) -> "Image.Image":
+def _clamp_width_pil(
+    img: "Image.Image", max_width: int = _MAX_CHUNK_WIDTH
+) -> "Image.Image":
     """Resize image so width <= max_width, preserving aspect ratio.
 
     Dimensions are rounded to multiples of 28 (Qwen3-VL patch alignment).
@@ -942,7 +944,10 @@ def _embed_tile_infos_with_engine(
                     resized_wide[0] += 1
                     logger.debug(
                         "Resized wide chunk %s ci=%d to %dx%d",
-                        img_path, ci, cw, ch,
+                        img_path,
+                        ci,
+                        cw,
+                        ch,
                     )
                 # Dedup key: use file path for pre-chunked files (avoids
                 # expensive tobytes + MD5 on ~2.7MB raw pixels per chunk)

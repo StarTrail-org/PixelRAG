@@ -174,7 +174,9 @@ def embed_items(
         )
         inputs = processor(text=[text], images=[img], return_tensors="pt", padding=True)
         if device != "cpu":
-            inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            inputs = {
+                k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()
+            }
 
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
@@ -222,7 +224,9 @@ def main():
         items = items[: args.limit]
     else:
         logger.info("Found %d chunks to embed", len(items))
-    embeddings = embed_items(items, args.model, device=args.device, instruction=args.instruction)
+    embeddings = embed_items(
+        items, args.model, device=args.device, instruction=args.instruction
+    )
 
     output_path = Path(args.output_dir) / "shard_000.npz"
     np.savez(
