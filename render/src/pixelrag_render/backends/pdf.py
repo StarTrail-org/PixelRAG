@@ -76,6 +76,7 @@ def render_pdf(
     images = convert_from_path(**convert_kwargs)
 
     saved_tiles: list[str] = []
+    chunks_info: list[dict] = []
     for idx, img in enumerate(images):
         # If caller provided a sparse page list, skip pages not in the list
         if pages is not None:
@@ -87,7 +88,18 @@ def render_pdf(
         tile_path = tile_dir / tile_name
         img.save(str(tile_path), "JPEG", quality=quality)
         saved_tiles.append(tile_name)
-        logger.debug("  Page %d → %s (%dx%d)", idx, tile_name, *img.size)
+        w, h = img.size
+        # Each PDF page = one chunk (no further splitting)
+        chunks_info.append({
+            "tile": tile_name,
+            "tile_index": idx,
+            "chunk_index": 0,
+            "file": tile_name,
+            "y_offset": 0,
+            "height": h,
+            "width": w,
+        })
+        logger.debug("  Page %d → %s (%dx%d)", idx, tile_name, w, h)
 
     manifest = {
         "source": str(path),
@@ -98,6 +110,20 @@ def render_pdf(
     }
     with open(tile_dir / "tiles.json", "w") as f:
         json.dump(manifest, f)
+
+    # Write chunks.json so the chunker skips this directory —
+    # each PDF page is already a natural semantic unit.
+    chunks_manifest = {
+        "page_height": 0,
+        "viewport_width": images[0].size[0] if images else 0,
+        "tile_height": images[0].size[1] if images else 0,
+        "chunk_height": images[0].size[1] if images else 0,
+        "num_tiles": len(saved_tiles),
+        "num_chunks": len(chunks_info),
+        "chunks": chunks_info,
+    }
+    with open(tile_dir / "chunks.json", "w") as f:
+        json.dump(chunks_manifest, f)
 
     logger.info("PDF rendered: %d pages → %s", len(saved_tiles), tile_dir)
     return [tile_dir]
