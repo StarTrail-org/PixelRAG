@@ -8,6 +8,7 @@ Entry point:
 
 import argparse
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -290,6 +291,16 @@ def main() -> None:
         default=200,
         help="DPI for PDF rendering (default: 200).",
     )
+    parser.add_argument(
+        "--cdp-url",
+        default=os.environ.get("PIXELSHOT_CDP_URL"),
+        metavar="URL",
+        help="Attach to an already-running Chrome/Brave DevTools endpoint "
+        "(e.g. http://127.0.0.1:9222) instead of launching a throwaway headless "
+        "browser. Renders each input in a fresh tab using that browser's existing "
+        "session (cookies/logins) — so authenticated pages work — then closes only "
+        "that tab. Needs no local Chrome binary. Env: PIXELSHOT_CDP_URL.",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -322,6 +333,7 @@ def main() -> None:
             viewport_width=args.viewport_width,
             workers=args.workers,
             wait_network_idle=args.wait_network_idle,
+            cdp_url=args.cdp_url,
         )
         results.extend(tile_dirs)
 
@@ -344,6 +356,7 @@ def main() -> None:
                     viewport_width=args.viewport_width,
                     workers=1,
                     wait_network_idle=args.wait_network_idle,
+                    cdp_url=args.cdp_url,
                 )
             elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
                 tile_dirs = render_file(fpath, output_dir)
