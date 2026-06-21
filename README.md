@@ -166,6 +166,44 @@ pixelrag index build
 pixelrag serve --index-dir ./my_index --port 30001
 ```
 
+<details>
+<summary><strong>Try it: index a PDF and search it locally</strong></summary>
+
+No GPU required — runs on macOS (Apple Silicon) or any machine with Python 3.10+.
+
+```bash
+pip install 'pixelrag[index]'
+
+# 1. Grab a sample PDF (or use your own)
+curl -L -o paper.pdf https://raw.githubusercontent.com/StarTrail-org/PixelRAG/main/assets/pixelrag-paper.pdf
+
+# 2. Create config (device: auto picks MPS on Mac, CUDA on Linux)
+cat > pixelrag.yaml << 'EOF'
+source:
+  type: local
+  path: ./paper.pdf
+
+embed:
+  model: Qwen/Qwen3-VL-Embedding-2B
+  device: auto
+
+output: ./paper_index
+EOF
+
+# 3. Build the index (~3 min on Apple M-series, ~1 min on GPU)
+pixelrag index build
+
+# 4. Serve it
+pixelrag serve --index-dir ./paper_index --port 30001
+
+# 5. Search — should return page 2 (the overview diagram)
+curl -X POST http://localhost:30001/search \
+  -H "Content-Type: application/json" \
+  -d '{"queries": [{"text": "Overview of PixelRAG and the diagram"}], "n_docs": 3}'
+```
+
+</details>
+
 ### Render a page programmatically
 
 ```python
