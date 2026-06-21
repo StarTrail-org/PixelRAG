@@ -238,6 +238,8 @@ You don't need to retrain to use the model — the trained adapters are publishe
 We also release the full training set
 ([`Chrisyichuan/screenshot-training-natural-filtered-v2`](https://huggingface.co/datasets/Chrisyichuan/screenshot-training-natural-filtered-v2)),
 so you can adapt other backbones yourself — a larger Qwen, or any other embedding model.
+The data curation pipeline (LLM-augmented query generation, filtering, hard-negative mining)
+is documented in [`train/docs/synthetic_data_pipeline.md`](train/docs/synthetic_data_pipeline.md).
 
 ## Acknowledgments
 
