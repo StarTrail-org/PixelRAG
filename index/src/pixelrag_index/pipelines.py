@@ -132,8 +132,8 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
 
     # Stage 3: Embed chunks to vectors
     logger.info("Stage 3/4: Embedding chunks (device=%s)...", device)
-    if device == "cpu":
-        # Use CPU embedder for machines without GPU
+    if device in ("cpu", "mps", "auto"):
+        # Local embedder: CPU, Apple MPS, or auto-detect
         cmd = [
             sys.executable,
             "-m",
@@ -142,6 +142,8 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             str(tiles_dir),
             "--output-dir",
             str(embeddings_dir),
+            "--device",
+            device,
         ]
         if "model" in embed_cfg:
             cmd += ["--model", embed_cfg["model"]]
