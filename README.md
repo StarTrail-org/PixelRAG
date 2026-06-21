@@ -199,7 +199,7 @@ pixelrag serve --index-dir ./paper_index --port 30001
 # 5. Search — should return page 2 (the overview diagram)
 curl -X POST http://localhost:30001/search \
   -H "Content-Type: application/json" \
-  -d '{"queries": [{"text": "Overview of PixelRAG and the diagram"}], "n_docs": 3}'
+  -d '{"queries": [{"text": "Overview of PixelRAG and the diagram"}], "n_docs": 1}'
 ```
 
 </details>
