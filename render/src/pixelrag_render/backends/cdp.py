@@ -102,19 +102,49 @@ async def _connect_ws(ws_url: str):
     )
 
 
-def _browser_ws_url(http_base: str) -> str:
+def _fetch_json(url: str, cdp_url: str, timeout: float = 5):
+    """GET ``url`` and parse JSON, mapping connection failures to a clear error.
+
+    ``cdp_url`` is the user-facing endpoint, used only for the message so a bad
+    or unreachable ``--cdp-url`` surfaces an actionable error instead of a raw
+    URLError traceback.
+    """
+    try:
+        data = urllib.request.urlopen(url, timeout=timeout).read()
+        return json.loads(data)
+    except Exception as e:
+        raise RuntimeError(f"Could not reach CDP endpoint at {cdp_url}: {e}") from e
+
+
+def _browser_ws_url(http_base: str, cdp_url: str) -> str:
     """Fetch the browser-level CDP websocket URL from ``/json/version``."""
-    data = urllib.request.urlopen(f"{http_base}/json/version", timeout=5).read()
-    return json.loads(data)["webSocketDebuggerUrl"]
+    info = _fetch_json(f"{http_base}/json/version", cdp_url)
+    try:
+        return info["webSocketDebuggerUrl"]
+    except (KeyError, TypeError) as e:
+        raise RuntimeError(
+            f"Could not reach CDP endpoint at {cdp_url}: "
+            f"unexpected /json/version response (no webSocketDebuggerUrl)"
+        ) from e
 
 
-def _page_ws_url_for_target(http_base: str, target_id: str) -> str:
-    """Resolve the page-level websocket URL for a freshly created ``targetId``."""
-    data = urllib.request.urlopen(f"{http_base}/json", timeout=5).read()
-    for t in json.loads(data):
-        if t.get("id") == target_id:
-            return t["webSocketDebuggerUrl"]
-    raise ConnectionError(f"Created target {target_id} not found in /json list")
+async def _page_ws_url_for_target(
+    http_base: str, target_id: str, cdp_url: str, retries: int = 5, delay: float = 0.5
+) -> str:
+    """Resolve the page-level websocket URL for a freshly created ``targetId``.
+
+    A freshly created target can momentarily be absent from ``/json``, so poll a
+    few times (mirroring ``_connect_cdp``'s retry) before giving up. The blocking
+    HTTP fetch runs in a thread so it doesn't block the event loop.
+    """
+    for attempt in range(retries):
+        targets = await asyncio.to_thread(_fetch_json, f"{http_base}/json", cdp_url)
+        for t in targets:
+            if t.get("id") == target_id:
+                return t["webSocketDebuggerUrl"]
+        if attempt < retries - 1:
+            await asyncio.sleep(delay)
+    raise RuntimeError(f"Created target {target_id} not found in /json list")
 
 
 async def _cdp_send(ws, msg_id_ref: list, method: str, params: dict | None = None):
@@ -543,6 +573,7 @@ async def _run_batch(
 async def _attached_worker(
     http_base: str,
     browser_ws_url: str,
+    cdp_url: str,
     work_queue: asyncio.Queue,
     output_dir: Path,
     tile_height: int,
@@ -565,12 +596,15 @@ async def _attached_worker(
     """
     browser_ws = await _connect_ws(browser_ws_url)
     bmsg = [0]
-    created = await _cdp_send(
-        browser_ws, bmsg, "Target.createTarget", {"url": "about:blank"}
-    )
-    target_id = created["targetId"]
+    target_id = None
     try:
-        ws = await _connect_ws(_page_ws_url_for_target(http_base, target_id))
+        created = await _cdp_send(
+            browser_ws, bmsg, "Target.createTarget", {"url": "about:blank"}
+        )
+        target_id = created["targetId"]
+        ws = await _connect_ws(
+            await _page_ws_url_for_target(http_base, target_id, cdp_url)
+        )
         msg_id_ref = [0]
 
         await _setup_page(ws, msg_id_ref, viewport_w, tile_height, wait_network_idle)
@@ -592,12 +626,13 @@ async def _attached_worker(
         await ws.close()
     finally:
         # Close only the tab we created; leave the browser and its other tabs alone.
-        try:
-            await _cdp_send(
-                browser_ws, bmsg, "Target.closeTarget", {"targetId": target_id}
-            )
-        except Exception:
-            pass
+        if target_id is not None:
+            try:
+                await _cdp_send(
+                    browser_ws, bmsg, "Target.closeTarget", {"targetId": target_id}
+                )
+            except Exception:
+                pass
         await browser_ws.close()
 
 
@@ -615,7 +650,7 @@ async def _run_batch_attached(
     cdp_url: str,
 ) -> list[Path]:
     http_base = _http_base_from_cdp_url(cdp_url)
-    browser_ws_url = _browser_ws_url(http_base)
+    browser_ws_url = _browser_ws_url(http_base, cdp_url)
 
     work_queue: asyncio.Queue = asyncio.Queue()
     stem_list = _derive_stems(urls, stems)
@@ -632,6 +667,7 @@ async def _run_batch_attached(
         _attached_worker(
             http_base,
             browser_ws_url,
+            cdp_url,
             work_queue,
             output_dir,
             tile_height,
