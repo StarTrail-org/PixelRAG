@@ -144,6 +144,8 @@ curl -X POST http://localhost:30001/search \
 
 ### Build an index from your own documents
 
+Works on **Linux (CUDA)** and **macOS (Apple Silicon / MPS)** — `device: auto` picks the best backend.
+
 ```bash
 pip install 'pixelrag[index]'
 
@@ -155,8 +157,7 @@ source:
 
 embed:
   model: Qwen/Qwen3-VL-Embedding-2B
-  device: cuda
-  gpu_ids: [0]
+  device: auto          # cuda on Linux, mps on macOS, cpu as fallback
 
 output: ./my_index
 EOF
