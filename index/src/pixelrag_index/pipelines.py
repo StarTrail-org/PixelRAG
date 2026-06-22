@@ -98,17 +98,22 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     if pdf_docs:
         logger.info("  Rendered %d PDFs", len(pdf_docs))
 
-    # Save articles.json for serve API — title + URL per article
+    # Save articles.json for serve API — title + URL per article.
+    # Use the pipeline's sequential *position index* (0, 1, 2, …) rather than
+    # int(a["id"]), because local sources use filename stems (e.g. "art_alice")
+    # as doc IDs, which are not numeric. int() on a filename stem raises ValueError
+    # and crashes the entire index build step.
     articles_path = output / "articles.json"
-    max_idx = max(int(a["id"]) for a in articles) + 1 if articles else 0
-    article_entries = [{"title": "", "url": ""}] * max_idx
-    for a in articles:
-        idx = int(a["id"])
+    article_entries = []
+    for enum_idx, a in enumerate(articles):
         title = a.get("metadata", {}).get("title", "")
         if not title and a.get("url"):
             title = a["url"].split("/")[-1].replace("_", " ").replace("%20", " ")
-        url = a.get("url", "")
-        article_entries[idx] = {"title": title or str(idx), "url": url}
+        if not title:
+            # Fall back to original doc id (e.g. filename stem) as display title
+            title = a.get("id", str(enum_idx))
+        url = a.get("url", "") or a.get("path", "")
+        article_entries.append({"title": title, "url": url})
     with open(articles_path, "w") as f:
         json.dump(article_entries, f)
     logger.info(
