@@ -23,6 +23,43 @@ def test_pixelshot_help():
     assert "pixelshot" in r.stdout
 
 
+def test_pixelshot_txt_input(monkeypatch, tmp_path, capsys):
+    from pixelrag_render import render as render_mod
+
+    urls_file = tmp_path / "urls.txt"
+    urls_file.write_text(
+        "\n"
+        " https://example.com/a \n"
+        "\n"
+        "https://example.com/b\n"
+        "https://example.com/c\n"
+    )
+    calls = []
+
+    def fake_render_url(url, output_dir, **kwargs):
+        calls.append(url)
+        if url.endswith("/b"):
+            raise RuntimeError("boom")
+        return [Path(output_dir) / f"{url.rsplit('/', 1)[-1]}.png.tiles"]
+
+    monkeypatch.setattr(render_mod, "render_url", fake_render_url)
+    monkeypatch.setattr(
+        sys, "argv", ["pixelshot", str(urls_file), "-o", str(tmp_path / "out")]
+    )
+
+    render_mod.main()
+
+    assert calls == [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+    ]
+    stdout = capsys.readouterr().out
+    assert "a.png.tiles" in stdout
+    assert "b.png.tiles" not in stdout
+    assert "c.png.tiles" in stdout
+
+
 def test_pixelrag_umbrella_help():
     r = _run("pixelrag", "--help")
     assert r.returncode == 0
