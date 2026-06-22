@@ -228,6 +228,13 @@ pixelshot paper.pdf -o ./tiles --dpi 200
 pixelshot https://github.com/StarTrail-org/PixelRAG paper.pdf -o ./tiles
 ```
 
+> **Chrome on Windows/macOS** — the bundled turbo `headless_shell` auto-installs on
+> **linux-x64** only. Elsewhere, `pixelshot` uses your system Chrome/Chromium (or
+> Playwright's Chromium), auto-detected from the standard install locations. Point it at
+> a specific binary with `CHROME_PATH=/path/to/chrome` if it isn't found automatically.
+> Each render runs in an isolated, throwaway Chrome profile, so it works even while you
+> have Chrome open.
+
 ### Embed tools (standalone)
 
 Each stage runs independently, without the orchestrator:
