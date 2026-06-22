@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 
 from .base import ArticleCapture, TileCapture, article_url
-from .connection import WebsocketConnection
+from .connection import WebsocketConnection, pick_page_ws_url
 
 TILE_HEIGHT = 8192
 VIEWPORT_WIDTH = 875
@@ -84,7 +84,7 @@ class CDPPipelinedTabsStrategy:
                 "--disable-dev-shm-usage",
             ]
             if not self.headless_shell:
-                args.append("--headless")
+                args.append("--headless=new")
             args.append("about:blank")
             proc = subprocess.Popen(
                 args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -102,7 +102,7 @@ class CDPPipelinedTabsStrategy:
                 data = urllib.request.urlopen(f"http://localhost:{port}/json").read()
                 targets = json.loads(data)
                 ws_a = await __import__("websockets").connect(
-                    targets[0]["webSocketDebuggerUrl"],
+                    pick_page_ws_url(targets),
                     open_timeout=10,
                     max_size=50 * 1024 * 1024,
                 )

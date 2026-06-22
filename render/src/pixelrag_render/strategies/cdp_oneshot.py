@@ -29,7 +29,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from .base import article_url, ArticleCapture, TileCapture
-from .connection import CHROME_ARGS
+from .connection import CHROME_ARGS, pick_page_ws_url
 
 TILE_HEIGHT = 8192
 VIEWPORT_WIDTH = 875
@@ -81,7 +81,7 @@ async def _launch_oneshot(
 
     args = [chrome_path, f"--remote-debugging-port={port}"]
     if not headless_shell:
-        args.append("--headless")
+        args.append("--headless=new")
     args += CHROME_ARGS
     if extra_args:
         args += extra_args
@@ -98,7 +98,7 @@ async def _launch_oneshot(
             ).read()
             targets = json.loads(data)
             ws = await websockets.connect(
-                targets[0]["webSocketDebuggerUrl"],
+                pick_page_ws_url(targets),
                 open_timeout=5,
                 max_size=50 * 1024 * 1024,
             )

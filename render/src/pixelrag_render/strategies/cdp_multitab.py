@@ -22,7 +22,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from .base import article_url, ArticleCapture, TileCapture
-from .connection import WebsocketConnection, CHROME_ARGS
+from .connection import WebsocketConnection, CHROME_ARGS, pick_page_ws_url
 
 TILE_HEIGHT = 8192
 VIEWPORT_WIDTH = 875
@@ -95,7 +95,7 @@ class CDPMultiTabStrategy:
             port = self._base_port + pi
             args = [self.chrome_path, f"--remote-debugging-port={port}"]
             if not self.headless_shell:
-                args.append("--headless")
+                args.append("--headless=new")
             args += CHROME_ARGS + ["--in-process-gpu", "about:blank"]
 
             proc = subprocess.Popen(
@@ -118,7 +118,7 @@ class CDPMultiTabStrategy:
                         raise ConnectionError(f"Chrome port {port}")
 
             ws0 = await websockets.connect(
-                targets[0]["webSocketDebuggerUrl"],
+                pick_page_ws_url(targets),
                 open_timeout=10,
                 max_size=50 * 1024 * 1024,
             )
