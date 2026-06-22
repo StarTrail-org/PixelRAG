@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.head_ref }}
+          ref: status
           token: ${{ secrets.GH_PAT || github.token }}
       - name: Update summary
         uses: upptime/uptime-monitor@v1.41.8
