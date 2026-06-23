@@ -44,7 +44,7 @@ serve = [
 ]
 index = ["pixelrag[embed]", "pyyaml>=6.0"]
 all = ["pixelrag[embed,serve,index]"]
-gpu = ["faiss-gpu-cu12>=1.13.2"]
+gpu = ["faiss-gpu-cu12>=1.13.2; sys_platform == 'linux'"]
 playwright = ["playwright>=1.40.0"]
 pdf = ["pdf2image>=1.16.0"]
 kiwix = ["libzim>=3.6.0"]
