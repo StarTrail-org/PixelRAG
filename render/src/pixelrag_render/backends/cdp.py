@@ -25,6 +25,7 @@ import io
 import json
 import logging
 import shutil
+import os
 import signal
 import subprocess
 import tempfile
@@ -81,6 +82,75 @@ async def _connect_cdp(port: int, retries: int = 5, delay: float = 1.0):
             if attempt < retries - 1:
                 await asyncio.sleep(delay)
     raise ConnectionError(f"Failed to connect to Chrome on port {port}")
+
+
+def _http_base_from_cdp_url(cdp_url: str) -> str:
+    """Normalize a ``--cdp-url`` value to an http DevTools base ``http://host:port``.
+
+    Accepts ``http://host:port`` (any path is ignored), ``ws://host:port/...``
+    (scheme swapped to http, path dropped), or a bare ``host:port``.
+    """
+    from urllib.parse import urlparse
+
+    p = urlparse(cdp_url if "//" in cdp_url else f"//{cdp_url}")
+    netloc = p.netloc or p.path
+    if not netloc:
+        raise ValueError(f"Invalid --cdp-url: {cdp_url!r}")
+    return f"http://{netloc}"
+
+
+async def _connect_ws(ws_url: str):
+    """Open a CDP websocket to an explicit ws URL (browser- or page-level)."""
+    import websockets
+
+    return await websockets.connect(
+        ws_url, open_timeout=10, max_size=50 * 1024 * 1024
+    )
+
+
+def _fetch_json(url: str, cdp_url: str, timeout: float = 5):
+    """GET ``url`` and parse JSON, mapping connection failures to a clear error.
+
+    ``cdp_url`` is the user-facing endpoint, used only for the message so a bad
+    or unreachable ``--cdp-url`` surfaces an actionable error instead of a raw
+    URLError traceback.
+    """
+    try:
+        data = urllib.request.urlopen(url, timeout=timeout).read()
+        return json.loads(data)
+    except Exception as e:
+        raise RuntimeError(f"Could not reach CDP endpoint at {cdp_url}: {e}") from e
+
+
+def _browser_ws_url(http_base: str, cdp_url: str) -> str:
+    """Fetch the browser-level CDP websocket URL from ``/json/version``."""
+    info = _fetch_json(f"{http_base}/json/version", cdp_url)
+    try:
+        return info["webSocketDebuggerUrl"]
+    except (KeyError, TypeError) as e:
+        raise RuntimeError(
+            f"Could not reach CDP endpoint at {cdp_url}: "
+            f"unexpected /json/version response (no webSocketDebuggerUrl)"
+        ) from e
+
+
+async def _page_ws_url_for_target(
+    http_base: str, target_id: str, cdp_url: str, retries: int = 5, delay: float = 0.5
+) -> str:
+    """Resolve the page-level websocket URL for a freshly created ``targetId``.
+
+    A freshly created target can momentarily be absent from ``/json``, so poll a
+    few times (mirroring ``_connect_cdp``'s retry) before giving up. The blocking
+    HTTP fetch runs in a thread so it doesn't block the event loop.
+    """
+    for attempt in range(retries):
+        targets = await asyncio.to_thread(_fetch_json, f"{http_base}/json", cdp_url)
+        for t in targets:
+            if t.get("id") == target_id:
+                return t["webSocketDebuggerUrl"]
+        if attempt < retries - 1:
+            await asyncio.sleep(delay)
+    raise RuntimeError(f"Created target {target_id} not found in /json list")
 
 
 async def _cdp_send(ws, msg_id_ref: list, method: str, params: dict | None = None):
@@ -300,6 +370,80 @@ async def capture_url(
     return len(tiles)
 
 
+async def _setup_page(ws, msg_id_ref: list, viewport_w: int, tile_height: int,
+                      wait_network_idle: bool):
+    """Enable the CDP domains and fix the viewport for a page ws before capture."""
+    await _cdp_send(ws, msg_id_ref, "Page.enable")
+    if wait_network_idle:
+        # PerformanceObserver (used by the idle wait) needs no CDP domain, but
+        # enabling Network keeps resource timing reliable across navigations.
+        await _cdp_send(ws, msg_id_ref, "Network.enable")
+    await _cdp_send(
+        ws,
+        msg_id_ref,
+        "Emulation.setDeviceMetricsOverride",
+        {
+            "width": viewport_w,
+            "height": tile_height,
+            "deviceScaleFactor": 1,
+            "mobile": False,
+        },
+    )
+
+
+async def _drain_queue(
+    ws,
+    msg_id_ref: list,
+    work_queue: asyncio.Queue,
+    output_dir: Path,
+    tile_height: int,
+    quality: int,
+    viewport_w: int,
+    image_format: str,
+    from_surface: bool,
+    wait_network_idle: bool,
+    worker_id: int,
+    stats: dict,
+    results: list,
+):
+    """Pull URLs off the queue and capture each through ``ws`` until it's empty.
+
+    Shared by the launch (``_worker``) and attach (``_attached_worker``) paths —
+    they differ only in how ``ws`` is obtained, not in how work is processed.
+    """
+    while True:
+        try:
+            item = work_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        url = item["url"]
+        stem = item["stem"]
+        tile_dir = output_dir / f"{stem}.png.tiles"
+
+        t0 = time.monotonic()
+        try:
+            n_tiles = await capture_url(
+                ws,
+                msg_id_ref,
+                url,
+                tile_dir,
+                tile_h=tile_height,
+                quality=quality,
+                viewport_w=viewport_w,
+                image_format=image_format,
+                from_surface=from_surface,
+                wait_network_idle=wait_network_idle,
+            )
+            stats["done"] += 1
+            elapsed = time.monotonic() - t0
+            logger.info("[w%d] %s → %d tiles (%.1fs)", worker_id, url, n_tiles, elapsed)
+            results.append(tile_dir)
+        except Exception as e:
+            stats["failed"] += 1
+            logger.warning("[w%d] FAIL %s: %s", worker_id, url, str(e)[:200])
+
+
 async def _worker(
     chrome_path: str,
     port: int,
@@ -342,57 +486,22 @@ async def _worker(
         ws = await _connect_cdp(port)
         msg_id_ref = [0]
 
-        await _cdp_send(ws, msg_id_ref, "Page.enable")
-        if wait_network_idle:
-            # PerformanceObserver (used by the idle wait) needs no CDP domain, but
-            # enabling Network keeps resource timing reliable across navigations.
-            await _cdp_send(ws, msg_id_ref, "Network.enable")
-        await _cdp_send(
+        await _setup_page(ws, msg_id_ref, viewport_w, tile_height, wait_network_idle)
+        await _drain_queue(
             ws,
             msg_id_ref,
-            "Emulation.setDeviceMetricsOverride",
-            {
-                "width": viewport_w,
-                "height": tile_height,
-                "deviceScaleFactor": 1,
-                "mobile": False,
-            },
+            work_queue,
+            output_dir,
+            tile_height,
+            quality,
+            viewport_w,
+            image_format,
+            from_surface,
+            wait_network_idle,
+            worker_id,
+            stats,
+            results,
         )
-
-        while True:
-            try:
-                item = work_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
-            url = item["url"]
-            stem = item["stem"]
-            tile_dir = output_dir / f"{stem}.png.tiles"
-
-            t0 = time.monotonic()
-            try:
-                n_tiles = await capture_url(
-                    ws,
-                    msg_id_ref,
-                    url,
-                    tile_dir,
-                    tile_h=tile_height,
-                    quality=quality,
-                    viewport_w=viewport_w,
-                    image_format=image_format,
-                    from_surface=from_surface,
-                    wait_network_idle=wait_network_idle,
-                )
-                stats["done"] += 1
-                elapsed = time.monotonic() - t0
-                logger.info(
-                    "[w%d] %s → %d tiles (%.1fs)", worker_id, url, n_tiles, elapsed
-                )
-                results.append(tile_dir)
-            except Exception as e:
-                stats["failed"] += 1
-                logger.warning("[w%d] FAIL %s: %s", worker_id, url, str(e)[:200])
-
         await ws.close()
     finally:
         proc.send_signal(signal.SIGTERM)
@@ -478,6 +587,126 @@ async def _run_batch(
     return results
 
 
+async def _attached_worker(
+    http_base: str,
+    browser_ws_url: str,
+    cdp_url: str,
+    work_queue: asyncio.Queue,
+    output_dir: Path,
+    tile_height: int,
+    quality: int,
+    viewport_w: int,
+    image_format: str,
+    from_surface: bool,
+    wait_network_idle: bool,
+    worker_id: int,
+    stats: dict,
+    results: list,
+):
+    """Async worker that attaches to an already-running browser over CDP.
+
+    Mirrors ``_worker`` but, instead of launching a throwaway ``--headless``
+    process, creates its own fresh tab (target) in the existing browser, drives
+    only that tab, and closes only that tab on teardown. The browser's profile
+    — cookies, logins — is whatever the running instance has, so authenticated
+    pages render. Never touches the user's other tabs; never kills the browser.
+    """
+    browser_ws = await _connect_ws(browser_ws_url)
+    bmsg = [0]
+    target_id = None
+    try:
+        created = await _cdp_send(
+            browser_ws, bmsg, "Target.createTarget", {"url": "about:blank"}
+        )
+        target_id = created["targetId"]
+        ws = await _connect_ws(
+            await _page_ws_url_for_target(http_base, target_id, cdp_url)
+        )
+        msg_id_ref = [0]
+
+        await _setup_page(ws, msg_id_ref, viewport_w, tile_height, wait_network_idle)
+        await _drain_queue(
+            ws,
+            msg_id_ref,
+            work_queue,
+            output_dir,
+            tile_height,
+            quality,
+            viewport_w,
+            image_format,
+            from_surface,
+            wait_network_idle,
+            worker_id,
+            stats,
+            results,
+        )
+        await ws.close()
+    finally:
+        # Close only the tab we created; leave the browser and its other tabs alone.
+        if target_id is not None:
+            try:
+                await _cdp_send(
+                    browser_ws, bmsg, "Target.closeTarget", {"targetId": target_id}
+                )
+            except Exception:
+                pass
+        await browser_ws.close()
+
+
+async def _run_batch_attached(
+    urls: list[str],
+    output_dir: Path,
+    num_workers: int,
+    tile_height: int,
+    quality: int,
+    viewport_w: int,
+    image_format: str,
+    from_surface: bool,
+    wait_network_idle: bool,
+    stems: list[str] | None,
+    cdp_url: str,
+) -> list[Path]:
+    http_base = _http_base_from_cdp_url(cdp_url)
+    browser_ws_url = _browser_ws_url(http_base, cdp_url)
+
+    work_queue: asyncio.Queue = asyncio.Queue()
+    stem_list = _derive_stems(urls, stems)
+    for url, stem in zip(urls, stem_list):
+        work_queue.put_nowait({"url": url, "stem": stem})
+
+    stats = {"done": 0, "failed": 0}
+    results: list[Path] = []
+
+    # One fresh tab per worker against the single shared browser — no extra
+    # processes, no interference with the user's existing tabs.
+    actual_workers = min(num_workers, len(urls))
+    workers = [
+        _attached_worker(
+            http_base,
+            browser_ws_url,
+            cdp_url,
+            work_queue,
+            output_dir,
+            tile_height,
+            quality,
+            viewport_w,
+            image_format,
+            from_surface,
+            wait_network_idle,
+            wid,
+            stats,
+            results,
+        )
+        for wid in range(actual_workers)
+    ]
+    await asyncio.gather(*workers, return_exceptions=True)
+
+    logger.info(
+        "Batch complete (attached): done=%d failed=%d", stats["done"], stats["failed"]
+    )
+    return results
+
+
 def render_urls(
     urls: list[str],
     output_dir: str | Path,
@@ -492,6 +721,7 @@ def render_urls(
     wait_network_idle: bool = False,
     turbo: bool | None = None,
     chrome_path: str | None = None,
+    cdp_url: str | None = None,
 ) -> list[Path]:
     """Render URLs to tiled images via CDP.
 
@@ -517,7 +747,15 @@ def render_urls(
                       force. Turbo only applies to the default capture profile
                       (jpeg, default viewport, fromSurface, no network-idle wait);
                       other options always use the standard path.
-        chrome_path: Path to Chrome binary. Auto-detected if None.
+        chrome_path: Path to Chrome binary. Auto-detected if None. Ignored when
+                      ``cdp_url`` is set (no browser is launched).
+        cdp_url: DevTools endpoint of an already-running browser (e.g.
+                      ``http://127.0.0.1:9222``). When set (or via the
+                      ``PIXELSHOT_CDP_URL`` env var), pixelshot attaches to that
+                      browser and renders in a fresh tab using its existing
+                      session (cookies/logins) instead of launching a throwaway
+                      headless instance. Forces the standard path (no turbo) and
+                      needs no local Chrome binary.
 
     Returns:
         List of Path objects for created tile directories.
@@ -527,6 +765,25 @@ def render_urls(
 
     if not urls:
         return []
+
+    cdp_url = cdp_url or os.environ.get("PIXELSHOT_CDP_URL")
+    if cdp_url:
+        logger.info("Attaching to existing browser at %s", cdp_url)
+        return asyncio.run(
+            _run_batch_attached(
+                urls,
+                output_dir,
+                workers,
+                tile_height,
+                quality,
+                viewport_width,
+                image_format,
+                from_surface,
+                wait_network_idle,
+                stems,
+                cdp_url,
+            )
+        )
 
     chrome = chrome_path or _find_chrome()
 
