@@ -298,11 +298,14 @@ def main() -> None:
     files = []
     for inp in args.inputs:
         if inp.lower().endswith(".txt"):
-            with open(inp, encoding="utf-8") as f:
-                for line in f:
-                    url = line.strip()
-                    if url:
-                        urls.append(url)
+            try:
+                with open(inp, encoding="utf-8") as f:
+                    for line in f:
+                        url = line.strip()
+                        if url:
+                            urls.append(url)
+            except FileNotFoundError:
+                parser.error(f"URL file not found: {inp}")
         elif inp.startswith("http://") or inp.startswith("https://"):
             urls.append(inp)
         else:
@@ -310,21 +313,24 @@ def main() -> None:
 
     results: list[Path] = []
 
-    for url in urls:
-        try:
-            tile_dirs = render_url(
-                url,
-                output_dir,
-                backend=args.backend,
-                tile_height=args.tile_height,
-                quality=args.quality,
-                viewport_width=args.viewport_width,
-                workers=args.workers,
-                wait_network_idle=args.wait_network_idle,
-            )
-            results.extend(tile_dirs)
-        except Exception as e:
-            logger.error("Failed to render %s: %s", url, e)
+    if urls:
+        logger.info(
+            "Rendering %d URL(s) with backend=%s workers=%d",
+            len(urls),
+            args.backend,
+            args.workers,
+        )
+        tile_dirs = render_urls(
+            urls,
+            output_dir,
+            backend=args.backend,
+            tile_height=args.tile_height,
+            quality=args.quality,
+            viewport_width=args.viewport_width,
+            workers=args.workers,
+            wait_network_idle=args.wait_network_idle,
+        )
+        results.extend(tile_dirs)
 
     # Handle files individually (they may need different backends)
     for fpath in files:
