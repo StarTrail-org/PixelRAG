@@ -54,9 +54,7 @@ def test_env_var_fallback_routes_to_attach(monkeypatch, tmp_path):
         return []
 
     monkeypatch.setattr(cdp, "_run_batch_attached", fake_attached)
-    monkeypatch.setattr(
-        cdp, "_find_chrome", lambda: pytest.fail("should not launch")
-    )
+    monkeypatch.setattr(cdp, "_find_chrome", lambda: pytest.fail("should not launch"))
     monkeypatch.setenv("PIXELSHOT_CDP_URL", "http://127.0.0.1:9222")
 
     cdp.render_urls(["https://example.com"], tmp_path)

@@ -103,9 +103,7 @@ async def _connect_ws(ws_url: str):
     """Open a CDP websocket to an explicit ws URL (browser- or page-level)."""
     import websockets
 
-    return await websockets.connect(
-        ws_url, open_timeout=10, max_size=50 * 1024 * 1024
-    )
+    return await websockets.connect(ws_url, open_timeout=10, max_size=50 * 1024 * 1024)
 
 
 def _fetch_json(url: str, cdp_url: str, timeout: float = 5):
@@ -370,8 +368,9 @@ async def capture_url(
     return len(tiles)
 
 
-async def _setup_page(ws, msg_id_ref: list, viewport_w: int, tile_height: int,
-                      wait_network_idle: bool):
+async def _setup_page(
+    ws, msg_id_ref: list, viewport_w: int, tile_height: int, wait_network_idle: bool
+):
     """Enable the CDP domains and fix the viewport for a page ws before capture."""
     await _cdp_send(ws, msg_id_ref, "Page.enable")
     if wait_network_idle:
