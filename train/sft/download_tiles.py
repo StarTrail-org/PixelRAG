@@ -34,7 +34,7 @@ def shard_suffix(p: str) -> str:
     return p
 
 
-def collect_paths(retrieval_dir: Path, splits: list[str]) -> set[str]:
+def collect_paths(retrieval_dir: Path, splits: list[str]) -> dict[str, str | None]:
     """Collect every unique absolute path across hit lists + gold suffixes.
 
     Gold paths use the dataset-relative form ('images/shard_.../chunk.png');
@@ -111,7 +111,7 @@ def fetch_tile(
     return False, f"{last_err}"
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--retrieval-dir",
