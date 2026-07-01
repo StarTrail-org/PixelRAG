@@ -147,6 +147,7 @@ class SearchRequest(BaseModel):
     instruction: str | None = None  # override query embedding instruction
     include_images: bool = False  # return base64-encoded tile images
     articles_only: bool = False  # drop Wikipedia meta pages (Portal:, List_of_, …)
+    hybrid: bool = False  # enable hybrid text+visual search (RRF fusion with BM25)
 
 
 # Wikipedia meta/aggregator pages that pollute "find the article" results.
@@ -431,6 +432,33 @@ async def search(req: SearchRequest):
         index.nprobe = default_nprobe
     t_search = time.time() - t0 - t_encode
 
+    # Hybrid: fuse FAISS visual results with BM25 text results via RRF
+    if req.hybrid and _state.get("bm25") and _state["bm25"].loaded:
+        from .hybrid import reciprocal_rank_fusion
+
+        for qi in range(len(req.queries)):
+            query_text = req.queries[qi].text
+            if not query_text:
+                continue
+            # Get FAISS ranked list
+            faiss_ranked = [
+                (int(indices[qi, j]), float(distances[qi, j]))
+                for j in range(fetch_k)
+                if int(indices[qi, j]) != -1
+            ]
+            # Get BM25 ranked list
+            bm25_ranked = _state["bm25"].search(query_text, k=fetch_k)
+            # Fuse
+            fused = reciprocal_rank_fusion([faiss_ranked, bm25_ranked])
+            # Rewrite indices/distances for this query with fused order
+            for j, (vid, rrf_score) in enumerate(fused[:fetch_k]):
+                indices[qi, j] = vid
+                distances[qi, j] = rrf_score
+            # Pad remaining with -1
+            for j in range(len(fused), fetch_k):
+                indices[qi, j] = -1
+                distances[qi, j] = 0.0
+
     # Build results
     meta = _state["metadata"]
     article_ids = meta["article_ids"]
@@ -669,6 +697,12 @@ def load(args):
             book,
             cache,
         )
+
+    # Optional: BM25 text index for hybrid search (RRF fusion)
+    from .hybrid import load_or_build_bm25
+
+    bm25 = load_or_build_bm25(args.index_dir, args.articles_json)
+    _state["bm25"] = bm25
 
 
 def _derive_kiwix_book(kiwix_url: str) -> str:
