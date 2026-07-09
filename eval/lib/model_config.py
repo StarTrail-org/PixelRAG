@@ -19,6 +19,14 @@ def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
     """
     model_lower = model_name.lower()
 
+    # MiniMax models (OpenAI-compatible API)
+    if model_lower == "minimax-m3" or model_lower.endswith("/minimax-m3"):
+        return {
+            "api_base": os.getenv("MINIMAX_API_BASE", "https://api.minimax.io/v1"),
+            "api_key": os.getenv("MINIMAX_API_KEY", os.getenv("API_KEY", "dummy")),
+            "model": model_name,
+        }
+
     # Gemini models
     if "gemini" in model_lower:
         # Check for Vertex AI first
