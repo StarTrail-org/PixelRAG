@@ -147,6 +147,11 @@ class SearchRequest(BaseModel):
     instruction: str | None = None  # override query embedding instruction
     include_images: bool = False  # return base64-encoded tile images
     articles_only: bool = False  # drop Wikipedia meta pages (Portal:, List_of_, …)
+    # Restrict search to one department (articles.json "department" field, set by
+    # `pixelrag index build` from the source directory layout). Pre-filters inside
+    # FAISS via an IDSelector — not a post-filter, so n_docs results are guaranteed
+    # when the department has enough tiles.
+    department: str | None = None
 
 
 # Wikipedia meta/aggregator pages that pollute "find the article" results.
@@ -163,6 +168,38 @@ _META_RE = re.compile(
 
 def _is_meta(url: str) -> bool:
     return bool(_META_RE.search(url))
+
+
+def _department_positions(department: str) -> np.ndarray:
+    """Vector positions (FAISS row ids) belonging to a department, cached per dept."""
+    dept_to_aids = _state.get("dept_to_aids") or {}
+    if not dept_to_aids:
+        raise HTTPException(
+            status_code=400,
+            detail="Index was built without department metadata; rebuild with "
+            "`pixelrag index build` from a directory-per-department source.",
+        )
+    cache = _state.setdefault("dept_positions", {})
+    if department not in cache:
+        aids = dept_to_aids.get(department)
+        if aids is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown department {department!r}. "
+                f"Available: {sorted(dept_to_aids)}",
+            )
+        article_ids = _state["metadata"]["article_ids"]
+        cache[department] = np.where(np.isin(article_ids, aids))[0].astype("int64")
+    return cache[department]
+
+
+def _department_search_params(department: str, nprobe: int) -> "faiss.SearchParameters":
+    """Build FAISS search params that pre-filter to one department's vectors."""
+    sel = faiss.IDSelectorBatch(_department_positions(department))
+    index = _state["index"]
+    if isinstance(index, faiss.IndexIVF):
+        return faiss.SearchParametersIVF(sel=sel, nprobe=nprobe)
+    return faiss.SearchParameters(sel=sel)
 
 
 class Hit(BaseModel):
@@ -339,6 +376,12 @@ def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
     if os.path.exists(flat_path):
         return flat_path
 
+    # PDF pipeline stores whole pages as tile_XXXX.jpg (one chunk per page,
+    # no materialized chunk files) — fall back to the page image.
+    page_path = os.path.join(tiles_dir, tiles_dirname, f"tile_{tile_index:04d}.jpg")
+    if os.path.exists(page_path):
+        return page_path
+
     # Sharded layout: tiles_dir/shard_XXX/sub/{article_id}.png.tiles/chunk_XXXX_YY.png
     top_shard = article_id // shard_size
     top_shard_dir = os.path.join(tiles_dir, f"shard_{top_shard:03d}")
@@ -425,7 +468,12 @@ async def search(req: SearchRequest):
         fetch_k = req.n_docs * 5
     else:
         fetch_k = req.n_docs
-    distances, indices = index.search(query_vectors, fetch_k)
+    if req.department:
+        # Department pre-filter: FAISS only scores vectors of that department.
+        params = _department_search_params(req.department, index.nprobe)
+        distances, indices = index.search(query_vectors, fetch_k, params=params)
+    else:
+        distances, indices = index.search(query_vectors, fetch_k)
 
     if req.nprobe is not None:
         index.nprobe = default_nprobe
@@ -524,6 +572,18 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/departments")
+async def departments():
+    """Departments available for the `department` search filter, with doc counts."""
+    dept_to_aids = _state.get("dept_to_aids") or {}
+    return {
+        "departments": [
+            {"name": d, "n_documents": len(aids)}
+            for d, aids in sorted(dept_to_aids.items())
+        ]
+    }
+
+
 class ReconstructRequest(BaseModel):
     vector_ids: list[int]
 
@@ -560,7 +620,8 @@ async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
     path = _resolve_path(article_id, tile_index, chunk_index)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Tile not found")
-    return FileResponse(path, media_type="image/png")
+    media_type = "image/jpeg" if path.endswith((".jpg", ".jpeg")) else "image/png"
+    return FileResponse(path, media_type=media_type)
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +661,20 @@ def load(args):
         articles = json.load(f)
     logger.info("Loaded %d article slugs", len(articles))
 
+    # Department → article ids, for the `department` search filter. Older
+    # indexes (or web/kiwix sources) have no "department" key — the map stays
+    # empty and filtered requests get a clear 400.
+    dept_to_aids: dict[str, list[int]] = {}
+    for aid, a in enumerate(articles):
+        dept = a.get("department", "") if isinstance(a, dict) else ""
+        if dept:
+            dept_to_aids.setdefault(dept, []).append(aid)
+    if dept_to_aids:
+        logger.info(
+            "Departments: %s",
+            ", ".join(f"{d}({len(v)})" for d, v in sorted(dept_to_aids.items())),
+        )
+
     # Load embedding model
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
@@ -634,6 +709,8 @@ def load(args):
             "index": index,
             "metadata": meta,
             "articles": articles,
+            "dept_to_aids": {d: np.asarray(v) for d, v in dept_to_aids.items()},
+            "dept_positions": {},
             "processor": processor,
             "model": model,
             "device": device,
