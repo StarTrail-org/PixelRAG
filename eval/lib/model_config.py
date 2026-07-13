@@ -7,6 +7,12 @@ import os
 from typing import Dict, Optional
 
 
+MINIMAX_MODELS = {
+    "minimax-m3": "MiniMax-M3",
+    "minimax-m2.7": "MiniMax-M2.7",
+}
+
+
 def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
     """
     Get model configuration based on model name.
@@ -20,11 +26,12 @@ def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
     model_lower = model_name.lower()
 
     # MiniMax models (OpenAI-compatible API)
-    if model_lower == "minimax-m3" or model_lower.endswith("/minimax-m3"):
+    minimax_model = MINIMAX_MODELS.get(model_lower.rsplit("/", 1)[-1])
+    if minimax_model:
         return {
             "api_base": os.getenv("MINIMAX_API_BASE", "https://api.minimax.io/v1"),
             "api_key": os.getenv("MINIMAX_API_KEY", os.getenv("API_KEY", "dummy")),
-            "model": model_name,
+            "model": minimax_model,
         }
 
     # Gemini models
