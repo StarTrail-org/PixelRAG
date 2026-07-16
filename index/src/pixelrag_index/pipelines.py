@@ -11,6 +11,28 @@ from .config import load_config, make_source
 logger = logging.getLogger("pixelrag-index")
 
 
+def _department_of(article: dict, source_root: str) -> str:
+    """Department = first sub-directory under the source root holding the file.
+
+    Files directly under the root, non-local documents (web URLs), or paths
+    outside the root have no department ("").
+    """
+    raw = article.get("path") or ""
+    if not raw:
+        url = article.get("url") or ""
+        if url.startswith("file://"):
+            from urllib.parse import unquote, urlparse
+
+            raw = unquote(urlparse(url).path)
+    if not raw or not source_root:
+        return ""
+    try:
+        rel = Path(raw).resolve().relative_to(Path(source_root).expanduser().resolve())
+    except ValueError:
+        return ""
+    return rel.parts[0] if len(rel.parts) > 1 else ""
+
+
 def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     """Build a searchable FAISS index from a document source.
 
@@ -28,6 +50,10 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     tiles_dir = output / "tiles"
     embeddings_dir = output / "embeddings"
     ingest_cfg = config.get("ingest", {})
+    # Default to waiting for network idle — most modern pages are JS-rendered
+    # SPAs that produce blank/incomplete tiles without this. Users can opt out
+    # with `ingest: {wait_network_idle: false}` in their pixelrag.yaml.
+    ingest_cfg.setdefault("wait_network_idle", True)
     embed_cfg = config.get("embed", {})
     device = embed_cfg.get("device", "cpu")
 
@@ -51,6 +77,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     url_docs = []
     pdf_docs = []
     image_docs = []
+    text_docs = []
     articles = []  # id → metadata mapping for serve
 
     for doc in docs:
@@ -67,6 +94,8 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             url_docs.append((idx, doc))
         elif doc.path and doc.path.lower().endswith(".pdf"):
             pdf_docs.append((idx, doc))
+        elif doc.path and (doc.metadata or {}).get("type") == "text":
+            text_docs.append((idx, doc))
         elif doc.path:
             image_docs.append((idx, doc))
 
@@ -89,14 +118,144 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             "  Rendered %d URLs (%d skipped, already exist)", len(new_url_docs), skipped
         )
 
-    # Render PDFs
+    # Render text files (.md, .txt) — convert to styled HTML, then render via CDP
+    if text_docs:
+        import html as html_mod
+        import re
+        import tempfile
+
+        import markdown as md_lib
+
+        _HTML_TEMPLATE = (
+            '<html><head><meta charset="utf-8"><style>'
+            "body { font-family: -apple-system, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif; "
+            "max-width: 860px; margin: 40px auto; padding: 20px; line-height: 1.6; "
+            "color: #1f2328; font-size: 16px; } "
+            "h1, h2, h3 { border-bottom: 1px solid #d1d9e0; padding-bottom: 0.3em; } "
+            "h1 { font-size: 2em; } h2 { font-size: 1.5em; } h3 { font-size: 1.25em; } "
+            "code { background: #eff1f3; padding: 0.2em 0.4em; border-radius: 6px; font-size: 85%%; "
+            "font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; } "
+            "pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; } "
+            "pre code { background: none; padding: 0; } "
+            "table { border-collapse: collapse; width: 100%%; margin: 16px 0; } "
+            "th, td { border: 1px solid #d1d9e0; padding: 6px 13px; } "
+            "th { background: #f6f8fa; font-weight: 600; } "
+            "a { color: #0969da; text-decoration: none; } "
+            "blockquote { border-left: 4px solid #d1d9e0; margin: 0; padding: 0 16px; color: #59636e; } "
+            "img { max-width: 100%%; } "
+            "hr { border: none; border-top: 1px solid #d1d9e0; margin: 24px 0; } "
+            "</style></head><body>"
+        )
+
+        def _resolve_relative_paths(html_str: str, base_dir: str) -> str:
+            """Rewrite relative src/href paths to file:// so the browser can load them."""
+
+            def _repl(m: re.Match) -> str:
+                attr, quote, url = m.group(1), m.group(2), m.group(3)
+                if url.startswith(("http://", "https://", "file://", "data:", "#")):
+                    return m.group(0)
+                resolved = (Path(base_dir) / url).resolve()
+                return f"{attr}={quote}{resolved.as_uri()}{quote}"
+
+            return re.sub(r'(src|href)=(["\'])([^"\']+)\2', _repl, html_str)
+
+        text_urls = []
+        text_stems = []
+
+        with tempfile.TemporaryDirectory(prefix="pixelrag_text_") as tmp_dir:
+            for idx, doc in text_docs:
+                if (tiles_dir / f"{idx}.png.tiles" / "tiles.json").exists():
+                    continue
+                src_path = Path(doc.path)
+                content = src_path.read_text(errors="replace")
+                ext = (doc.metadata or {}).get("extension", src_path.suffix.lower())
+                if ext == ".md":
+                    body = md_lib.markdown(
+                        content, extensions=["tables", "fenced_code"]
+                    )
+                else:
+                    body = f"<pre>{html_mod.escape(content)}</pre>"
+                body = _resolve_relative_paths(body, str(src_path.parent))
+                html_content = f"{_HTML_TEMPLATE}{body}</body></html>"
+                html_path = Path(tmp_dir) / f"{idx}.html"
+                html_path.write_text(html_content)
+                text_urls.append(f"file://{html_path.resolve()}")
+                text_stems.append(str(idx))
+
+            if text_urls:
+                text_ingest = {k: v for k, v in ingest_cfg.items() if k != "backend"}
+                render_urls(
+                    text_urls,
+                    str(tiles_dir),
+                    backend="cdp",
+                    stems=text_stems,
+                    **text_ingest,
+                )
+        logger.info("  Rendered %d text files (.md/.txt)", len(text_docs))
+
+    # Render PDFs — use idx as tile directory name (like URLs) so directory
+    # names are always the numeric article_id.
     for idx, doc in pdf_docs:
+        out_dir = tiles_dir / f"{idx}.png.tiles"
+        if (out_dir / "tiles.json").exists():
+            continue  # already rendered on a previous run
         try:
-            render_pdf(doc.path, str(tiles_dir))
+            render_pdf(doc.path, str(tiles_dir), stem=str(idx))
         except Exception as e:
             logger.warning("  FAILED PDF %s: %s", doc.id, e)
     if pdf_docs:
         logger.info("  Rendered %d PDFs", len(pdf_docs))
+
+    # Render local images (PNG/JPG) — copy/resize into the tile directory structure
+    if image_docs:
+        from PIL import Image as PILImage
+
+        _MAX_WIDTH = 4000  # cap large images to avoid VRAM pressure during embedding
+
+        for idx, doc in image_docs:
+            tile_dir = tiles_dir / f"{idx}.png.tiles"
+            if (tile_dir / "tiles.json").exists():
+                continue
+            tile_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                img = PILImage.open(doc.path).convert("RGB")
+                # Resize if too wide
+                if img.width > _MAX_WIDTH:
+                    ratio = _MAX_WIDTH / img.width
+                    img = img.resize(
+                        (int(img.width * ratio), int(img.height * ratio)),
+                        PILImage.LANCZOS,
+                    )
+                tile_path = tile_dir / "tile_0000.jpg"
+                img.save(tile_path, "JPEG", quality=90)
+                manifest = {
+                    "url": doc.path,
+                    "page_height": img.height,
+                    "tiles": ["tile_0000.jpg"],
+                    "complete": True,
+                }
+                with open(tile_dir / "tiles.json", "w") as f:
+                    json.dump(manifest, f)
+            except Exception as e:
+                logger.warning("  FAILED image %s: %s", doc.id, e)
+        logger.info("  Rendered %d local images", len(image_docs))
+
+    # Write article_id into each tile directory's manifests so the embed
+    # pipeline reads it explicitly instead of guessing from the directory name.
+    # tiles.json always exists here; chunks.json exists only for PDFs (pdf.py
+    # writes it at render time, and chunk.py then skips those dirs). For every
+    # other source chunks.json is created by Stage 2's chunk.py, which
+    # propagates article_id from tiles.json. So write whichever exist now.
+    for idx, _ in url_docs + text_docs + pdf_docs + image_docs:
+        for manifest_name in ("tiles.json", "chunks.json"):
+            manifest_path = tiles_dir / f"{idx}.png.tiles" / manifest_name
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                    manifest["article_id"] = idx
+                    manifest_path.write_text(json.dumps(manifest))
+                except (json.JSONDecodeError, OSError):
+                    pass
 
     # Save articles.json for serve API — title + URL per article.
     # Use the pipeline's sequential *position index* (0, 1, 2, …) rather than
@@ -104,6 +263,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     # as doc IDs, which are not numeric. int() on a filename stem raises ValueError
     # and crashes the entire index build step.
     articles_path = output / "articles.json"
+    source_root = str(config.get("source", {}).get("path", "") or "")
     article_entries = []
     for enum_idx, a in enumerate(articles):
         title = a.get("metadata", {}).get("title", "")
@@ -113,7 +273,11 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             # Fall back to original doc id (e.g. filename stem) as display title
             title = a.get("id", str(enum_idx))
         url = a.get("url", "") or a.get("path", "")
-        article_entries.append({"title": title, "url": url})
+        # Department (from the directory layout of local sources) enables
+        # server-side filtered search; empty string means "no department".
+        article_entries.append(
+            {"title": title, "url": url, "department": _department_of(a, source_root)}
+        )
     with open(articles_path, "w") as f:
         json.dump(article_entries, f)
     logger.info(

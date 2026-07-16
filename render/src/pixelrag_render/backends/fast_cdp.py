@@ -39,11 +39,19 @@ logger = logging.getLogger("pixelrag_render.backends.fast_cdp")
 VIEWPORT_WIDTH = 875
 TILE_HEIGHT = 8192
 
+# GPU rasterization default OFF — headless Chrome falls back to software and ignores these
+# flags (no-op, never sped anything up), but on a GPU box without device access it crashes the
+# GPU process and hangs capture. Inherited-from-initial-release assumption that didn't hold.
+# Opt in with PIXELSHOT_ENABLE_GPU=1 only on a real graphics-GPU box with device access.
+_GPU_ARGS = (
+    ["--enable-gpu-rasterization", "--force-gpu-rasterization"]
+    if os.environ.get("PIXELSHOT_ENABLE_GPU")
+    else ["--disable-gpu"]
+)
 CHROME_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
-    "--enable-gpu-rasterization",
-    "--force-gpu-rasterization",
+    *_GPU_ARGS,
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
     "--disable-background-networking",

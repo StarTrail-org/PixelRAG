@@ -40,6 +40,19 @@ logger = logging.getLogger("pixelrag_render.backends.cdp")
 VIEWPORT_W = 875
 VIEWPORT_H = 1080
 
+# GPU rasterization: default OFF. Headless Chrome can't actually GPU-rasterize — it falls
+# back to the software renderer and ignores these flags (no-op), so they never sped anything
+# up (verified: enable == disable timing; the bottleneck is capture IPC, not rasterization).
+# Worse, on a box that HAS a GPU device but no access to it (e.g. /dev/dri without the render
+# group), Chrome tries the GPU, the GPU process crashes on init, and capture hangs. The
+# `--enable-gpu-rasterization` pair was inherited from the initial release on the assumption
+# it would help; it doesn't. Default to `--disable-gpu`; opt in with PIXELSHOT_ENABLE_GPU=1
+# only on a real graphics-GPU box with device access.
+_GPU_ARGS = (
+    ["--enable-gpu-rasterization", "--force-gpu-rasterization"]
+    if os.environ.get("PIXELSHOT_ENABLE_GPU")
+    else ["--disable-gpu"]
+)
 BROWSER_ARGS = [
     "--disable-dev-shm-usage",
     "--no-sandbox",
@@ -47,8 +60,7 @@ BROWSER_ARGS = [
     "--disable-backgrounding-occluded-windows",
     "--disable-background-networking",
     "--disable-features=Translate,MediaRouter,OptimizationHints",
-    "--enable-gpu-rasterization",
-    "--force-gpu-rasterization",
+    *_GPU_ARGS,
 ]
 
 

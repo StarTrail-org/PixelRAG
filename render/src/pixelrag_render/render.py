@@ -115,6 +115,7 @@ def render_pdf(
     dpi: int = 200,
     pages: Optional[list[int]] = None,
     quality: int = 85,
+    stem: str | None = None,
 ) -> list[Path]:
     """Render a PDF file to tiled JPEG images.
 
@@ -124,13 +125,16 @@ def render_pdf(
         dpi: Rendering resolution (default 200 ≈ 1650×2200 for A4).
         pages: 1-based list of page numbers to render. ``None`` renders all.
         quality: JPEG quality 1-100 (default 85).
+        stem: Override for the tile directory name (default: PDF filename stem).
 
     Returns:
         List containing the tile directory Path on success.
     """
     from .backends.pdf import render_pdf as _render_pdf
 
-    return _render_pdf(path, output_dir, dpi=dpi, pages=pages, quality=quality)
+    return _render_pdf(
+        path, output_dir, dpi=dpi, pages=pages, quality=quality, stem=stem
+    )
 
 
 def render_file(

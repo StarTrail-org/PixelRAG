@@ -2,7 +2,7 @@
   <img src="docs/assets/banner.png" alt="PixelRAG — Visual Retrieval-Augmented Generation" width="100%">
 </p>
 <p align="center">
-  Official codebase for <b><a href="assets/pixelrag-paper.pdf">PIXELRAG: Web Screenshots Beat Text for
+  Official codebase for <b><a href="https://arxiv.org/abs/2606.28344">PIXELRAG: Web Screenshots Beat Text for
 Retrieval-Augmented Generation</a></b>
 </p>
 <p align="center">
@@ -263,6 +263,22 @@ We also release the full training set
 so you can adapt other backbones yourself — a larger Qwen, or any other embedding model.
 The data curation pipeline (LLM-augmented query generation, filtering, hard-negative mining)
 is documented in [`train/docs/synthetic_data_pipeline.md`](train/docs/synthetic_data_pipeline.md).
+
+## Citation
+
+If you find PixelRAG useful, please cite our paper:
+
+```bibtex
+@misc{wang2026pixelragwebscreenshotsbeat,
+      title={PIXELRAG: Web Screenshots Beat Text for Retrieval-Augmented Generation}, 
+      author={Yichuan Wang and Zhifei Li and Zirui Wang and Paul Teiletche and Lesheng Jin and Matei Zaharia and Joseph E. Gonzalez and Sewon Min},
+      year={2026},
+      eprint={2606.28344},
+      archivePrefix={arXiv},
+      primaryClass={cs.IR},
+      url={https://arxiv.org/abs/2606.28344}, 
+}
+```
 
 ## Acknowledgments
 

@@ -69,7 +69,7 @@ KEEP_FILES = {
 }
 
 
-def build_readme(comp, judge, config, step_note):
+def build_readme(comp: str, judge: float, config: str, step_note: str) -> str:
     n_ratio = int(comp.rstrip("x"))
     return f"""---
 license: apache-2.0
@@ -155,7 +155,9 @@ messages = [{{"role": "user", "content": [
 """
 
 
-def push_one(comp, adapter_dir, judge, config, step_note):
+def push_one(
+    comp: str, adapter_dir: str, judge: float, config: str, step_note: str
+) -> None:
     src = Path(adapter_dir)
     assert src.exists(), f"missing {src}"
 
@@ -187,7 +189,7 @@ def push_one(comp, adapter_dir, judge, config, step_note):
         print(f"  uploaded → https://huggingface.co/{repo_id}")
 
 
-def main():
+def main() -> None:
     for args in BEST:
         push_one(*args)
     print("\nAll done.")
