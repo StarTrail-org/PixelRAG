@@ -31,8 +31,8 @@ def load_config(path=None):
 def make_source(config):
     source_config = dict(config.get("source", {}))
     source_type = source_config.pop("type", "local")
-    # Expand ~ in any string values that look like paths
+    # Expand ~ in any string values that look like paths (but not URLs)
     for k, v in source_config.items():
-        if isinstance(v, str) and ("/" in v or "~" in v):
+        if isinstance(v, str) and ("/" in v or "~" in v) and "://" not in v:
             source_config[k] = str(Path(v).expanduser())
     return SOURCES[source_type](**source_config)
