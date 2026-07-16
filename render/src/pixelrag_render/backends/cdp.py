@@ -199,8 +199,11 @@ def _readiness_expr(wait_network_idle: bool) -> str:
 
     When ``wait_network_idle`` is set, also waits (after load) until no new
     resource has been fetched for ``NET_QUIET_MS`` — for SPAs that fetch their
-    content *after* load. This costs a quiet window per page, so it is opt-in
-    (the pixelbrowse skill / single-page renders), not the batch default.
+    content *after* load. This costs a quiet window (>= NET_QUIET_MS, up to
+    LOAD_TIMEOUT_MS) per page and disqualifies the turbo capture path, so it
+    is off by default here; the pixelbrowse skill and the index pipeline's
+    `web` source (arbitrary external URLs) enable it, while kiwix/localhost
+    and file:// batch renders stay on the fast path.
 
     Returns an async-IIFE expression resolving to the page height to tile.
     """

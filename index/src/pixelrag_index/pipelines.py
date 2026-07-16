@@ -49,11 +49,19 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     output = Path(config.get("output", "./index"))
     tiles_dir = output / "tiles"
     embeddings_dir = output / "embeddings"
-    ingest_cfg = config.get("ingest", {})
-    # Default to waiting for network idle — most modern pages are JS-rendered
-    # SPAs that produce blank/incomplete tiles without this. Users can opt out
-    # with `ingest: {wait_network_idle: false}` in their pixelrag.yaml.
-    ingest_cfg.setdefault("wait_network_idle", True)
+    # Copy so the pop/setdefault below never mutate the caller's dict (or the
+    # module-level DEFAULT_CONFIG when the yaml has no `ingest:` section).
+    ingest_cfg = dict(config.get("ingest", {}))
+    # Wait for network idle by default only for the `web` source (arbitrary
+    # external URLs), where JS-rendered SPAs fetch content after `load` and
+    # would otherwise produce blank/incomplete tiles. Everything else — kiwix
+    # (localhost), local text docs (file://) — has its assets ready before
+    # `load` fires (see docs/screenshot-throughput-optimization.md), and the
+    # idle wait would cost >=500ms per page AND disqualify the turbo capture
+    # path (cdp.py forces the standard path when wait_network_idle is set).
+    # An explicit `ingest: {wait_network_idle: ...}` in pixelrag.yaml wins.
+    if config.get("source", {}).get("type") == "web":
+        ingest_cfg.setdefault("wait_network_idle", True)
     embed_cfg = config.get("embed", {})
     device = embed_cfg.get("device", "cpu")
 
