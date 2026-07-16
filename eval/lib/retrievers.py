@@ -11,7 +11,6 @@ from . import (
     NaiveRetriever,
     ScreenshotRetriever,
     TiledScreenshotRetriever,
-    LocalWikiTiledScreenshotRetriever,
     TextRetriever,
     JinaReaderRetriever,
     WikipediaAPIRetriever,
@@ -75,15 +74,6 @@ def build_retriever(args, examples, model, api_base, api_key):
             screenshot_dir=args.screenshot_dir, max_pixels=args.max_pixels
         )
         mode = f"Screenshot (Ground Truth, max_pixels={args.max_pixels or 'None'})"
-
-    elif args.url_tiled_screenshot and args.local_wiki:
-        retriever = LocalWikiTiledScreenshotRetriever(
-            tiles_dir=args.tiles_dir,
-            wiki_cache_dir=args.local_wiki_screenshot_dir,
-            tile_height=args.tile_height,
-            max_tiles=args.max_tiles,
-        )
-        mode = f"Local-Wiki Tiled Screenshot (Ground Truth, tile_height={args.tile_height}, max_tiles={args.max_tiles})"
 
     elif args.url_tiled_screenshot:
         retriever = TiledScreenshotRetriever(
@@ -184,8 +174,7 @@ def build_retriever(args, examples, model, api_base, api_key):
             qwen3vl_cache_path = args.retrieval_cache
             if qwen3vl_cache_path is None:
                 task_subset = f"{args.task}_{args.subset}" if args.subset else args.task
-                localwiki_suffix = "_localwiki" if args.local_wiki else ""
-                qwen3vl_cache_path = f"qwen3vl_tiles_{task_subset}_{TILE_WIDTH}x{args.tile_height}_{args.num_examples}ex{localwiki_suffix}_embeddings.pkl"
+                qwen3vl_cache_path = f"qwen3vl_tiles_{task_subset}_{TILE_WIDTH}x{args.tile_height}_{args.num_examples}ex_embeddings.pkl"
             qwen3vl_gpu_ids = [int(x.strip()) for x in args.qwen3vl_gpu_ids.split(",")]
 
             pixel_query_map = None
@@ -232,8 +221,6 @@ def build_retriever(args, examples, model, api_base, api_key):
                 pixel_query_map=pixel_query_map,
                 multimodal_query_text_only=args.evqa_multimodal_query_text_only,
                 multimodal_query_image_only=args.evqa_multimodal_query_image_only,
-                local_wiki=args.local_wiki,
-                local_wiki_screenshot_dir=args.local_wiki_screenshot_dir,
                 multi_image_query=args.evqa_multi_image_query,
                 prebuilt_tiles_dir=getattr(args, "prebuilt_tiles_dir", None),
                 embedding_backend=getattr(args, "embedding_backend", "vllm"),
@@ -242,8 +229,6 @@ def build_retriever(args, examples, model, api_base, api_key):
             mode = "Tiled Qwen3-VL-Embedding Retrieval"
             if getattr(args, "prebuilt_tiles_dir", None):
                 mode += " (prebuilt hard-mini)"
-            elif args.local_wiki:
-                mode += " (local-wiki)"
             if args.task == "encyclopedic_vqa":
                 if args.evqa_multi_image_query:
                     mode += " (EVQA multi-image query)"
@@ -326,7 +311,6 @@ def build_retriever(args, examples, model, api_base, api_key):
             query_image_fn=query_image_fn,
             multi_image_query=args.evqa_multi_image_query,
             tiles_dir=args.tiles_dir or "tiles/evqa",
-            lookup_reference_url=args.lookup_reference_url,
             query_instruction=args.query_instruction,
         )
         mode = f"Local API Retrieval ({args.local_api_url})"
@@ -338,8 +322,6 @@ def build_retriever(args, examples, model, api_base, api_key):
             mode += " (multimodal query)"
         if args.query_rewrite:
             mode += f" + QueryRewrite({rw_model})"
-        if args.lookup_reference_url:
-            mode += " + RefURL"
         if args.reranker:
             mode += f" + Reranker({args.reranker_model}, top{args.rerank_top_k})"
         if args.react:

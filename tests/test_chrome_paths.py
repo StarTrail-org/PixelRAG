@@ -31,3 +31,30 @@ def test_find_chrome_returns_executable():
     # On any supported dev box this resolves to an installed/usable binary.
     path = find_chrome()
     assert os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def test_playwright_chromium_sorted_by_revision_not_lexically(monkeypatch):
+    """Newer Playwright Chromium revisions must rank ahead of older ones.
+
+    Playwright caches browsers under ``chromium-<revision>`` with a plain
+    integer revision. A lexicographic sort ranks ``chromium-999`` above
+    ``chromium-1187`` once revisions cross the 3→4 digit boundary, so the
+    resolver would pick an *older* browser. Sorting by integer revision fixes
+    that — assert the candidate list is newest-first regardless of digit count.
+    """
+    import glob
+
+    found = [
+        "/home/u/.cache/ms-playwright/chromium-999/chrome-linux/chrome",
+        "/home/u/.cache/ms-playwright/chromium-1208/chrome-linux/chrome",
+        "/home/u/.cache/ms-playwright/chromium-1187/chrome-linux/chrome",
+    ]
+    monkeypatch.setattr(glob, "glob", lambda pattern: list(found))
+
+    paths = _candidate_chrome_paths("Linux")
+    revisions = [p for p in paths if "ms-playwright" in p]
+    assert revisions == [
+        "/home/u/.cache/ms-playwright/chromium-1208/chrome-linux/chrome",
+        "/home/u/.cache/ms-playwright/chromium-1187/chrome-linux/chrome",
+        "/home/u/.cache/ms-playwright/chromium-999/chrome-linux/chrome",
+    ]

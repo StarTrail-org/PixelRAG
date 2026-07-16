@@ -25,9 +25,11 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import signal
 import struct
 import subprocess
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -37,11 +39,19 @@ logger = logging.getLogger("pixelrag_render.backends.fast_cdp")
 VIEWPORT_WIDTH = 875
 TILE_HEIGHT = 8192
 
+# GPU rasterization default OFF — headless Chrome falls back to software and ignores these
+# flags (no-op, never sped anything up), but on a GPU box without device access it crashes the
+# GPU process and hangs capture. Inherited-from-initial-release assumption that didn't hold.
+# Opt in with PIXELSHOT_ENABLE_GPU=1 only on a real graphics-GPU box with device access.
+_GPU_ARGS = (
+    ["--enable-gpu-rasterization", "--force-gpu-rasterization"]
+    if os.environ.get("PIXELSHOT_ENABLE_GPU")
+    else ["--disable-gpu"]
+)
 CHROME_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
-    "--enable-gpu-rasterization",
-    "--force-gpu-rasterization",
+    *_GPU_ARGS,
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
     "--disable-background-networking",
@@ -115,12 +125,22 @@ def _next_base_port() -> int:
 
 
 async def _launch_chrome(chrome_path: str, port: int) -> tuple:
-    """Launch a headless Chrome and return (websocket, proc)."""
+    """Launch a headless Chrome and return (websocket, proc, user_data_dir)."""
     import websockets
 
+    # Isolated profile per worker. Without --user-data-dir, a launch on a machine that
+    # already has Chrome open forwards to the running instance (default profile) instead
+    # of starting this headless renderer — navigation/screenshot then hang forever. A
+    # unique dir also stops parallel workers from colliding on one profile. See issue #54.
+    user_data_dir = tempfile.mkdtemp(prefix=f"pixelshot_chrome_{port}_")
     args = (
         # `--headless=new`: bare `--headless` is deprecated and hangs on modern Chrome.
-        [chrome_path, f"--remote-debugging-port={port}", "--headless=new"]
+        [
+            chrome_path,
+            f"--remote-debugging-port={port}",
+            "--headless=new",
+            f"--user-data-dir={user_data_dir}",
+        ]
         + CHROME_ARGS
         + ["about:blank"]
     )
@@ -142,19 +162,21 @@ async def _launch_chrome(chrome_path: str, port: int) -> tuple:
                 open_timeout=10,
                 max_size=50 * 1024 * 1024,
             )
-            return ws, proc
+            return ws, proc, user_data_dir
         except Exception:
             if attempt == 9:
                 proc.kill()
+                shutil.rmtree(user_data_dir, ignore_errors=True)
                 raise ConnectionError(f"Failed to connect to Chrome on port {port}")
 
 
 class _Conn:
     """Minimal CDP connection with a receive loop."""
 
-    def __init__(self, ws, proc):
+    def __init__(self, ws, proc, user_data_dir=None):
         self._ws = ws
         self._proc = proc
+        self._user_data_dir = user_data_dir
         self._msg_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._event_listeners: dict[str, list] = {}
@@ -238,6 +260,8 @@ class _Conn:
             self._proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self._proc.kill()
+        if self._user_data_dir:
+            shutil.rmtree(self._user_data_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -328,8 +352,8 @@ async def _run_render(
         base_port + n_workers - 1,
     )
     for i in range(n_workers):
-        ws, proc = await _launch_chrome(chrome_path, base_port + i)
-        conn = _Conn(ws, proc)
+        ws, proc, user_data_dir = await _launch_chrome(chrome_path, base_port + i)
+        conn = _Conn(ws, proc, user_data_dir)
         connections.append(conn)
 
     for i, conn in enumerate(connections):

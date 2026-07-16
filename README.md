@@ -2,7 +2,7 @@
   <img src="docs/assets/banner.png" alt="PixelRAG — Visual Retrieval-Augmented Generation" width="100%">
 </p>
 <p align="center">
-  Official codebase for <b><a href="assets/pixelrag-paper.pdf">PIXELRAG: Web Screenshots Beat Text for
+  Official codebase for <b><a href="https://arxiv.org/abs/2606.28344">PIXELRAG: Web Screenshots Beat Text for
 Retrieval-Augmented Generation</a></b>
 </p>
 <p align="center">
@@ -73,10 +73,12 @@ The renderer also ships as a Claude Code plugin — the **pixelbrowse** skill. I
 raw HTML, Claude screenshots a page with `pixelshot` and _reads the image_, so it sees
 charts, diagrams, tables, and layout the way a person does.
 
-Install it — no clone needed (`pixelshot` comes from `pip install pixelrag`):
+Install it — no clone needed. Install the `pixelshot` CLI so it's on your `PATH`
+(use `uv tool` or `pipx` to keep it isolated yet always available to Claude — a
+plain `pip install` into a project venv may leave `pixelshot` off `PATH`):
 
 ```bash
-pip install pixelrag                                # provides the pixelshot command
+uv tool install pixelrag                            # pixelshot on PATH (or: pipx install pixelrag)
 claude plugin marketplace add StarTrail-org/PixelRAG
 claude plugin install pixelbrowse@pixelrag-plugins
 ```
@@ -228,6 +230,13 @@ pixelshot paper.pdf -o ./tiles --dpi 200
 pixelshot https://github.com/StarTrail-org/PixelRAG paper.pdf -o ./tiles
 ```
 
+> **Chrome on Windows/macOS** — the bundled turbo `headless_shell` auto-installs on
+> **linux-x64** only. Elsewhere, `pixelshot` uses your system Chrome/Chromium (or
+> Playwright's Chromium), auto-detected from the standard install locations. Point it at
+> a specific binary with `CHROME_PATH=/path/to/chrome` if it isn't found automatically.
+> Each render runs in an isolated, throwaway Chrome profile, so it works even while you
+> have Chrome open.
+
 ### Embed tools (standalone)
 
 Each stage runs independently, without the orchestrator:
@@ -254,6 +263,22 @@ We also release the full training set
 so you can adapt other backbones yourself — a larger Qwen, or any other embedding model.
 The data curation pipeline (LLM-augmented query generation, filtering, hard-negative mining)
 is documented in [`train/docs/synthetic_data_pipeline.md`](train/docs/synthetic_data_pipeline.md).
+
+## Citation
+
+If you find PixelRAG useful, please cite our paper:
+
+```bibtex
+@misc{wang2026pixelragwebscreenshotsbeat,
+      title={PIXELRAG: Web Screenshots Beat Text for Retrieval-Augmented Generation}, 
+      author={Yichuan Wang and Zhifei Li and Zirui Wang and Paul Teiletche and Lesheng Jin and Matei Zaharia and Joseph E. Gonzalez and Sewon Min},
+      year={2026},
+      eprint={2606.28344},
+      archivePrefix={arXiv},
+      primaryClass={cs.IR},
+      url={https://arxiv.org/abs/2606.28344}, 
+}
+```
 
 ## Acknowledgments
 

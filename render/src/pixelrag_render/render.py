@@ -8,6 +8,7 @@ Entry point:
 
 import argparse
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -114,6 +115,7 @@ def render_pdf(
     dpi: int = 200,
     pages: Optional[list[int]] = None,
     quality: int = 85,
+    stem: str | None = None,
 ) -> list[Path]:
     """Render a PDF file to tiled JPEG images.
 
@@ -123,13 +125,16 @@ def render_pdf(
         dpi: Rendering resolution (default 200 ≈ 1650×2200 for A4).
         pages: 1-based list of page numbers to render. ``None`` renders all.
         quality: JPEG quality 1-100 (default 85).
+        stem: Override for the tile directory name (default: PDF filename stem).
 
     Returns:
         List containing the tile directory Path on success.
     """
     from .backends.pdf import render_pdf as _render_pdf
 
-    return _render_pdf(path, output_dir, dpi=dpi, pages=pages, quality=quality)
+    return _render_pdf(
+        path, output_dir, dpi=dpi, pages=pages, quality=quality, stem=stem
+    )
 
 
 def render_file(
@@ -279,16 +284,28 @@ def main() -> None:
     parser.add_argument(
         "--wait-network-idle",
         action="store_true",
-        help="After the page's load event, also wait until the network is quiet "
-        "(~500ms) before capturing. Helps JS/SPA pages that fetch content after "
-        "load; adds a quiet window per page, so off by default. Recommended for "
-        "single-page renders (e.g. the pixelbrowse skill).",
+        help="After the page's load event, also wait until at most 2 network "
+        "requests have been in flight for ~500ms (networkidle2) before "
+        "capturing, capped at 12s. Helps JS/SPA pages that fetch content "
+        "after load; tolerates persistent analytics/long-poll connections. "
+        "Off by default; the index pipeline's `web` source and the "
+        "pixelbrowse skill enable it.",
     )
     parser.add_argument(
         "--dpi",
         type=int,
         default=200,
         help="DPI for PDF rendering (default: 200).",
+    )
+    parser.add_argument(
+        "--cdp-url",
+        default=os.environ.get("PIXELSHOT_CDP_URL"),
+        metavar="URL",
+        help="Attach to an already-running Chrome/Brave DevTools endpoint "
+        "(e.g. http://127.0.0.1:9222) instead of launching a throwaway headless "
+        "browser. Renders each input in a fresh tab using that browser's existing "
+        "session (cookies/logins) — so authenticated pages work — then closes only "
+        "that tab. Needs no local Chrome binary. Env: PIXELSHOT_CDP_URL.",
     )
 
     args = parser.parse_args()
@@ -329,6 +346,7 @@ def main() -> None:
             viewport_width=args.viewport_width,
             workers=args.workers,
             wait_network_idle=args.wait_network_idle,
+            cdp_url=args.cdp_url,
         )
         results.extend(tile_dirs)
 
@@ -351,6 +369,7 @@ def main() -> None:
                     viewport_width=args.viewport_width,
                     workers=1,
                     wait_network_idle=args.wait_network_idle,
+                    cdp_url=args.cdp_url,
                 )
             elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
                 tile_dirs = render_file(fpath, output_dir)

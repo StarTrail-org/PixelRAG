@@ -17,6 +17,12 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+# POST timeout (seconds) for a retrieval call to the search serve. The default suits a fast
+# serve; raise it for a slow one — e.g. on-demand render, where a batch can take minutes:
+# `PIXELRAG_RETRIEVAL_TIMEOUT=7200`. Otherwise the request times out, the batch is cached
+# empty, and the reader silently falls back to closed-book (looks like a bad score, not an error).
+_RETRIEVAL_TIMEOUT = float(os.environ.get("PIXELRAG_RETRIEVAL_TIMEOUT", "600"))
+
 
 @dataclass
 class RetrievalResult:
@@ -81,104 +87,6 @@ _LANDMARK_V2_DATA_DIR = os.path.join(
     "data",
     "landmark_v2",
 )
-
-# Local kiwix tile store (pre-rendered Wikipedia pages)
-_WIKI_SCREENSHOT_DIR = "/path/to/project"
-_KIWIX_OUTPUT_DIR = "/path/to/data"
-_KIWIX_ARTICLES_JSON = "/path/to/data"
-_KIWIX_REDIRECTS_JSON = "/path/to/data"
-
-
-def _lookup_and_copy_local_wiki_tiles(
-    ex_id: str,
-    url: str,
-    tiles_dir: str,
-    wiki_cache_dir: str,
-    cut_height: int,
-) -> list[str]:
-    """Look up a Wikipedia URL in the local kiwix tile store, copy raw tiles, cut into strips.
-
-    Args:
-        ex_id: Example ID (used for output tile naming).
-        url: Wikipedia URL.
-        tiles_dir: Directory where cut tile strips are written ({ex_id}_tile_*.png).
-        wiki_cache_dir: Directory where raw kiwix tile pages are cached ({ex_id}/).
-        cut_height: Height of each output strip in pixels.
-
-    Returns:
-        Sorted list of cut tile paths.
-
-    Raises:
-        RuntimeError: If kiwix index unavailable, URL not found, or no tiles produced.
-    """
-    import glob as _glob
-    import shutil
-    import sys as _sys
-    from PIL import Image
-
-    # Return cached tiles if already cut
-    existing = sorted(_glob.glob(os.path.join(tiles_dir, f"{ex_id}_tile_*.png")))
-    if existing:
-        return existing
-
-    if not url or "wikipedia.org" not in url:
-        raise RuntimeError(f"Not a Wikipedia URL: {url!r}")
-
-    if not os.path.isdir(_KIWIX_OUTPUT_DIR) or not os.path.isfile(_KIWIX_ARTICLES_JSON):
-        raise RuntimeError(f"kiwix tiles unavailable at {_KIWIX_OUTPUT_DIR}")
-
-    if _WIKI_SCREENSHOT_DIR not in _sys.path:
-        _sys.path.insert(0, _WIKI_SCREENSHOT_DIR)
-    from scripts.build_index import batch_query_by_url as _batch_query
-
-    redirects = _KIWIX_REDIRECTS_JSON if os.path.isfile(_KIWIX_REDIRECTS_JSON) else None
-    results = _batch_query(
-        _KIWIX_OUTPUT_DIR, [url], _KIWIX_ARTICLES_JSON, redirects_json=redirects
-    )
-    result = results.get(url)
-    if result is None:
-        raise RuntimeError(f"URL not found in local kiwix: {url}")
-
-    # Copy raw kiwix tiles to wiki_cache_dir/{ex_id}/
-    src_dir = os.path.join(_KIWIX_OUTPUT_DIR, result["tiles_dir"])
-    article_cache = os.path.join(wiki_cache_dir, str(ex_id))
-    if not os.path.exists(article_cache):
-        if not os.path.isdir(src_dir):
-            raise RuntimeError(f"kiwix tiles dir not on disk: {src_dir}")
-        shutil.copytree(src_dir, article_cache)
-
-    # Cut raw tiles into height=cut_height strips
-    os.makedirs(tiles_dir, exist_ok=True)
-    raw_tiles = sorted(
-        f
-        for f in os.listdir(article_cache)
-        if f.endswith(".png") and f.startswith("tile_")
-    )
-    if not raw_tiles:
-        raise RuntimeError(f"No tile PNGs found in {article_cache}")
-
-    global_row = 0
-    for raw_name in raw_tiles:
-        raw_path = os.path.join(article_cache, raw_name)
-        if os.path.getsize(raw_path) == 0:
-            continue
-        img = Image.open(raw_path)
-        img.load()
-        w, h = img.size
-        y = 0
-        while y < h:
-            y2 = min(y + cut_height, h)
-            strip = img.crop((0, y, w, y2))
-            strip.save(os.path.join(tiles_dir, f"{ex_id}_tile_{global_row}_0.png"))
-            strip.close()
-            global_row += 1
-            y += cut_height
-        img.close()
-
-    tile_paths = sorted(_glob.glob(os.path.join(tiles_dir, f"{ex_id}_tile_*.png")))
-    if not tile_paths:
-        raise RuntimeError(f"No strips cut for {ex_id} (source: {article_cache})")
-    return tile_paths
 
 
 def _get_inat_image_path_for_example(example: dict, tiles_dir: str) -> str | None:
@@ -716,63 +624,6 @@ class TiledScreenshotRetriever(BaseRetriever):
             images=images,
             source_url=extract_url_from_metadata(example),
             retrieval_type="tiled_screenshot",
-        )
-
-
-class LocalWikiTiledScreenshotRetriever(BaseRetriever):
-    """Ground-truth tiled retriever using pre-rendered Wikipedia tiles from local kiwix.
-
-    For each example, looks up the Wikipedia URL in the local kiwix tile store,
-    copies raw tiles to a local cache, cuts into tile_height strips, and passes
-    all tiles to the VLM as context. No Selenium, no SSH.
-
-    Args:
-        tiles_dir: Directory for cut tile strips (output).
-        wiki_cache_dir: Directory for raw kiwix tile copies.
-        tile_height: Height of each strip in pixels (default 1024).
-        max_tiles: Maximum tiles to pass to VLM (None = all).
-    """
-
-    def __init__(
-        self,
-        tiles_dir: str = "tiles-local-wiki",
-        wiki_cache_dir: str = "screenshots-localwiki",
-        tile_height: int = 1024,
-        max_tiles: int | None = None,
-    ):
-        self.tiles_dir = tiles_dir
-        self.wiki_cache_dir = wiki_cache_dir
-        self.tile_height = tile_height
-        self.max_tiles = max_tiles
-        os.makedirs(tiles_dir, exist_ok=True)
-        os.makedirs(wiki_cache_dir, exist_ok=True)
-
-    async def retrieve(self, query: str, example: dict) -> RetrievalResult:
-        from .simpleqa_data import extract_url_from_metadata
-
-        ex_id = example.get("id", "unknown")
-        url = extract_url_from_metadata(example) or ""
-
-        loop = asyncio.get_event_loop()
-        try:
-            tile_paths = await loop.run_in_executor(
-                None,
-                lambda: _lookup_and_copy_local_wiki_tiles(
-                    ex_id, url, self.tiles_dir, self.wiki_cache_dir, self.tile_height
-                ),
-            )
-        except RuntimeError as e:
-            logger.error(f"local-wiki [{ex_id}]: {e}")
-            return RetrievalResult(retrieval_type="local_wiki_tiled", source_url=url)
-
-        if self.max_tiles is not None and len(tile_paths) > self.max_tiles:
-            tile_paths = tile_paths[: self.max_tiles]
-
-        images = [(path, 1.0) for path in tile_paths]
-        return RetrievalResult(
-            images=images,
-            source_url=url,
-            retrieval_type="local_wiki_tiled",
         )
 
 
@@ -2197,7 +2048,6 @@ class LocalAPIRetriever(BaseRetriever):
         query_image_fn=None,
         multi_image_query: bool = False,
         tiles_dir: str = "tiles/evqa",
-        lookup_reference_url: bool = False,
         query_instruction: str | None = None,
     ):
         self.api_url = api_url
@@ -2213,7 +2063,6 @@ class LocalAPIRetriever(BaseRetriever):
         self.query_image_fn = query_image_fn  # callable(example) -> image_path or None
         self.multi_image_query = multi_image_query
         self.tiles_dir = tiles_dir
-        self.lookup_reference_url = lookup_reference_url
         self.query_instruction = query_instruction
         self._cache: dict[str, list[dict]] = {}  # example_id -> hits
         self._rewritten_queries: dict[str, str] = {}  # example_id -> rewritten query
@@ -2249,92 +2098,6 @@ class LocalAPIRetriever(BaseRetriever):
 
         await asyncio.gather(*[rewrite_one(ex) for ex in examples])
         return rewritten
-
-    def _lookup_reference_tiles(self, examples: list[dict]) -> dict[str, list[dict]]:
-        """Look up reference URL tiles from kiwix for each example.
-
-        Returns dict: example_id -> list of hit dicts with path/score/url/is_reference.
-        """
-        import sys as _sys
-        from .simpleqa_data import extract_url_from_metadata
-
-        if not os.path.isdir(_KIWIX_OUTPUT_DIR) or not os.path.isfile(
-            _KIWIX_ARTICLES_JSON
-        ):
-            logger.error(
-                f"lookup_reference_url: kiwix tiles unavailable at {_KIWIX_OUTPUT_DIR}"
-            )
-            return {}
-
-        if _WIKI_SCREENSHOT_DIR not in _sys.path:
-            _sys.path.insert(0, _WIKI_SCREENSHOT_DIR)
-        from scripts.build_index import batch_query_by_url as _batch_query
-
-        # Collect URLs, group by URL to avoid duplicate lookups
-        url_to_eids: dict[str, list[str]] = {}
-        for ex in examples:
-            eid = ex.get("id", "unknown")
-            url = extract_url_from_metadata(ex)
-            if url and "wikipedia.org" in url:
-                url_to_eids.setdefault(url, []).append(eid)
-
-        if not url_to_eids:
-            return {}
-
-        redirects = (
-            _KIWIX_REDIRECTS_JSON if os.path.isfile(_KIWIX_REDIRECTS_JSON) else None
-        )
-        results = _batch_query(
-            _KIWIX_OUTPUT_DIR,
-            list(url_to_eids.keys()),
-            _KIWIX_ARTICLES_JSON,
-            redirects_json=redirects,
-        )
-
-        ref_tiles: dict[str, list[dict]] = {}
-        found, missing = 0, 0
-        for url, eids in url_to_eids.items():
-            result = results.get(url)
-            if result is None:
-                missing += 1
-                logger.warning(f"lookup_reference_url: URL not found in kiwix: {url}")
-                continue
-            tiles_dir_abs = os.path.join(_KIWIX_OUTPUT_DIR, result["tiles_dir"])
-            if not os.path.isdir(tiles_dir_abs):
-                missing += 1
-                logger.warning(
-                    f"lookup_reference_url: tiles dir missing: {tiles_dir_abs}"
-                )
-                continue
-            chunks = sorted(
-                f
-                for f in os.listdir(tiles_dir_abs)
-                if f.startswith("chunk_") and f.endswith(".png")
-            )
-            if not chunks:
-                missing += 1
-                logger.warning(
-                    f"lookup_reference_url: no chunk files in {tiles_dir_abs}"
-                )
-                continue
-            found += 1
-            hits = [
-                {
-                    "path": os.path.join(tiles_dir_abs, c),
-                    "score": 0.0,
-                    "url": url,
-                    "is_reference": True,
-                }
-                for c in chunks
-            ]
-            for eid in eids:
-                ref_tiles[eid] = hits
-
-        logger.info(
-            f"lookup_reference_url: batch lookup {found} found, {missing} missing "
-            f"out of {len(url_to_eids)} unique URLs"
-        )
-        return ref_tiles
 
     async def prefetch(self, examples: list[dict]):
         """Batch-fetch retrieval results for all examples via the API."""
@@ -2466,7 +2229,7 @@ class LocalAPIRetriever(BaseRetriever):
                     async with session.post(
                         self.api_url,
                         json=payload,
-                        timeout=aiohttp.ClientTimeout(total=600),
+                        timeout=aiohttp.ClientTimeout(total=_RETRIEVAL_TIMEOUT),
                     ) as response:
                         if response.status != 200:
                             error_text = await response.text()
@@ -2524,28 +2287,6 @@ class LocalAPIRetriever(BaseRetriever):
                 self._cache[eid] = sorted_hits[: self.top_k]
 
         logger.info(f"LocalAPIRetriever: prefetch complete, {len(self._cache)} cached")
-
-        # Step 2.5: Merge reference URL tiles (if enabled) — chunk-level dedup
-        if self.lookup_reference_url:
-            ref_tiles = self._lookup_reference_tiles(examples)
-            total_added, total_skipped = 0, 0
-            for eid, ref_hits in ref_tiles.items():
-                existing = self._cache.get(eid, [])
-                existing_paths = {hit.get("path", "") for hit in existing}
-                new_chunks = [rh for rh in ref_hits if rh["path"] not in existing_paths]
-                skipped = len(ref_hits) - len(new_chunks)
-                if new_chunks:
-                    logger.info(
-                        f"  [{eid[:8]}]: adding {len(new_chunks)} reference URL chunks "
-                        f"({skipped} already in API results)"
-                    )
-                    self._cache[eid] = existing + new_chunks
-                    total_added += len(new_chunks)
-                total_skipped += skipped
-            logger.info(
-                f"lookup_reference_url: added {total_added} chunks, "
-                f"skipped {total_skipped} duplicates"
-            )
 
         # Step 3: Rerank (if reranker provided)
         if self.reranker is not None:
@@ -2728,8 +2469,6 @@ class TiledQwen3VLEmbeddingRetriever(BaseRetriever):
         pixel_query_map: dict[str, str] | None = None,
         multimodal_query_text_only: bool = False,
         multimodal_query_image_only: bool = False,
-        local_wiki: bool = False,
-        local_wiki_screenshot_dir: str | None = None,
         multi_image_query: bool = False,
         prebuilt_tiles_dir: str | None = None,
         embedding_backend: str = "vllm",  # "vllm", "hf", or "biqwen3"
@@ -2744,8 +2483,6 @@ class TiledQwen3VLEmbeddingRetriever(BaseRetriever):
         self.pixel_query_map = pixel_query_map  # example_id -> pixel query image path
         self.multimodal_query_text_only = multimodal_query_text_only
         self.multimodal_query_image_only = multimodal_query_image_only
-        self.local_wiki = local_wiki
-        self.local_wiki_screenshot_dir = local_wiki_screenshot_dir
         self.multi_image_query = multi_image_query
         self.prebuilt_tiles_dir = prebuilt_tiles_dir
         self.embedding_backend = embedding_backend
@@ -2778,11 +2515,9 @@ class TiledQwen3VLEmbeddingRetriever(BaseRetriever):
         )
         self._dedup_examples = dedup_examples
 
-        # Prepare tile paths: prebuilt dir (hard mini-datastore), local-wiki, or Selenium
+        # Prepare tile paths: prebuilt dir (hard mini-datastore) or Selenium
         if self.prebuilt_tiles_dir:
             tile_paths = self._load_prebuilt_tiles()
-        elif self.local_wiki:
-            tile_paths = self._prepare_local_wiki_tiles()
         else:
             tile_paths = self._prepare_screenshots_and_tiles()
 
@@ -2832,8 +2567,7 @@ class TiledQwen3VLEmbeddingRetriever(BaseRetriever):
     def _load_prebuilt_tiles(self) -> list[str]:
         """Load ALL .png tiles from a prebuilt tile directory (e.g. hard mini-datastore).
 
-        Unlike _prepare_local_wiki_tiles which only loads golden tiles matching
-        example IDs, this loads every tile in the directory — including distractors.
+        Loads every tile in the directory — including distractors.
         """
         import glob as _glob
 
@@ -2842,153 +2576,6 @@ class TiledQwen3VLEmbeddingRetriever(BaseRetriever):
         logger.info(
             f"prebuilt-tiles: loaded {len(filtered)} tiles from {self.prebuilt_tiles_dir} "
             f"(filtered {len(all_tiles) - len(filtered)} extreme aspect ratio tiles)"
-        )
-        return filtered
-
-    def _prepare_local_wiki_tiles(self) -> list[str]:
-        """Prepare tiles from local kiwix tile store for all examples in the batch.
-
-        Does a single batch URL lookup (fast), then copies+cuts tiles per example.
-        Reports an error (no fallback) if a URL is not found in kiwix.
-
-        Returns the list of all cut tile paths ready for embedding.
-        """
-        import glob as _glob
-        import shutil
-        import sys as _sys
-        from PIL import Image
-        from .simpleqa_data import extract_url_from_metadata
-        from tqdm import tqdm
-
-        cut_height = (
-            self.tile_size[1] if isinstance(self.tile_size, tuple) else self.tile_size
-        )
-        wiki_cache = self.local_wiki_screenshot_dir or os.path.join(
-            self.screenshot_dir, "local-wiki"
-        )
-        os.makedirs(wiki_cache, exist_ok=True)
-        os.makedirs(self.tiles_dir, exist_ok=True)
-
-        # Separate already-cached examples from ones that need processing
-        need: list[tuple[str, str]] = []  # (ex_id, url)
-        for ex in self._dedup_examples:
-            ex_id = ex["id"]
-            if not _glob.glob(os.path.join(self.tiles_dir, f"{ex_id}_tile_*.png")):
-                url = extract_url_from_metadata(ex) or ""
-                need.append((ex_id, url))
-
-        logger.info(
-            f"local-wiki: {len(self._dedup_examples) - len(need)} cached, {len(need)} need processing"
-        )
-
-        if need:
-            # Single batch lookup for all URLs at once (loads articles.json once)
-            if not os.path.isdir(_KIWIX_OUTPUT_DIR) or not os.path.isfile(
-                _KIWIX_ARTICLES_JSON
-            ):
-                logger.error(
-                    f"local-wiki: kiwix tiles unavailable at {_KIWIX_OUTPUT_DIR}"
-                )
-            else:
-                if _WIKI_SCREENSHOT_DIR not in _sys.path:
-                    _sys.path.insert(0, _WIKI_SCREENSHOT_DIR)
-                from scripts.build_index import batch_query_by_url as _batch_query
-
-                redirects = (
-                    _KIWIX_REDIRECTS_JSON
-                    if os.path.isfile(_KIWIX_REDIRECTS_JSON)
-                    else None
-                )
-                urls_to_lookup = [u for _, u in need if u and "wikipedia.org" in u]
-                results = _batch_query(
-                    _KIWIX_OUTPUT_DIR,
-                    urls_to_lookup,
-                    _KIWIX_ARTICLES_JSON,
-                    redirects_json=redirects,
-                )
-                found = sum(1 for r in results.values() if r is not None)
-                logger.info(
-                    f"local-wiki: batch lookup found {found}/{len(urls_to_lookup)} URLs"
-                )
-
-                # Copy + cut per example
-                ok, failed = 0, 0
-                for ex_id, url in tqdm(need, desc="local-wiki: copying+cutting tiles"):
-                    # Check cache again (may have been done by a parallel run)
-                    if _glob.glob(os.path.join(self.tiles_dir, f"{ex_id}_tile_*.png")):
-                        ok += 1
-                        continue
-                    result = results.get(url)
-                    if result is None:
-                        logger.error(
-                            f"local-wiki [{ex_id}]: URL not found in kiwix: {url}"
-                        )
-                        failed += 1
-                        continue
-                    src_dir = os.path.join(_KIWIX_OUTPUT_DIR, result["tiles_dir"])
-                    article_cache = os.path.join(wiki_cache, str(ex_id))
-                    if not os.path.exists(article_cache):
-                        if not os.path.isdir(src_dir):
-                            logger.error(
-                                f"local-wiki [{ex_id}]: tiles dir not on disk: {src_dir}"
-                            )
-                            failed += 1
-                            continue
-                        shutil.copytree(src_dir, article_cache)
-                    # Cut into strips
-                    raw_tiles = sorted(
-                        f
-                        for f in os.listdir(article_cache)
-                        if f.endswith(".png") and f.startswith("tile_")
-                    )
-                    if not raw_tiles:
-                        logger.error(
-                            f"local-wiki [{ex_id}]: no tile PNGs in {article_cache}"
-                        )
-                        failed += 1
-                        continue
-                    global_row = 0
-                    for raw_name in raw_tiles:
-                        raw_path = os.path.join(article_cache, raw_name)
-                        if os.path.getsize(raw_path) == 0:
-                            continue
-                        try:
-                            img = Image.open(raw_path)
-                            img.load()
-                        except Exception as e:
-                            logger.warning(
-                                f"local-wiki [{ex_id}]: corrupt tile {raw_path}: {e}"
-                            )
-                            continue
-                        w, h = img.size
-                        y = 0
-                        while y < h:
-                            y2 = min(y + cut_height, h)
-                            img.crop((0, y, w, y2)).save(
-                                os.path.join(
-                                    self.tiles_dir, f"{ex_id}_tile_{global_row}_0.png"
-                                )
-                            )
-                            global_row += 1
-                            y += cut_height
-                        img.close()
-                    ok += 1
-                logger.info(
-                    f"local-wiki: {ok} articles prepared, {failed} not found/failed"
-                )
-
-        all_tile_paths = []
-        for ex in self._dedup_examples:
-            ex_id = ex["id"]
-            tiles = sorted(
-                _glob.glob(os.path.join(self.tiles_dir, f"{ex_id}_tile_*.png"))
-            )
-            all_tile_paths.extend(tiles)
-
-        filtered = _filter_tiles_by_aspect_ratio(all_tile_paths)
-        logger.info(
-            f"local-wiki: {len(filtered)} tiles ready for embedding "
-            f"(filtered {len(all_tile_paths) - len(filtered)} extreme aspect ratio tiles)"
         )
         return filtered
 
@@ -3257,7 +2844,7 @@ class TiledQwen3VLEmbeddingRetriever(BaseRetriever):
 
 
 class TextAPIRetriever(BaseRetriever):
-    """Retrieve text chunks from a text search API (wiki-screenshot text_search_api.py).
+    """Retrieve text chunks from the text search API.
 
     The API accepts:
         POST /search
@@ -3336,7 +2923,7 @@ class TextAPIRetriever(BaseRetriever):
                     async with session.post(
                         self.api_url,
                         json=payload,
-                        timeout=aiohttp.ClientTimeout(total=600),
+                        timeout=aiohttp.ClientTimeout(total=_RETRIEVAL_TIMEOUT),
                     ) as response:
                         if response.status != 200:
                             error_text = await response.text()
