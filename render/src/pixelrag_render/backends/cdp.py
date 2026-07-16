@@ -183,11 +183,149 @@ async def _cdp_send(ws, msg_id_ref: list, method: str, params: dict | None = Non
 # before giving up and capturing whatever is there. Keeps a hanging page from
 # stalling a worker.
 LOAD_TIMEOUT_MS = 12_000
-# Network is considered idle once no new resource has been fetched for this long.
+# The network is considered idle once at most NET_IDLE_MAX_INFLIGHT requests
+# have been in flight for NET_QUIET_MS (Puppeteer's "networkidle2" semantics).
+# Tolerating 2 in-flight requests is what makes this usable on arbitrary web
+# pages: analytics beacons / long-polling keep 1-2 connections busy forever,
+# and a strict zero-in-flight wait would sit at the hard cap on every such
+# page. Content loads (SPA hydration, image sets) burst well past 2.
 NET_QUIET_MS = 500
+NET_IDLE_MAX_INFLIGHT = 2
 
 
-def _readiness_expr(wait_network_idle: bool) -> str:
+class _NetIdleState:
+    """networkidle2 bookkeeping over raw CDP frames.
+
+    Feed every incoming CDP frame to :meth:`on_frame`; the state tracks the
+    set of in-flight HTTP requests (``Network.requestWillBeSent`` opens one,
+    ``Network.loadingFinished`` / ``Network.loadingFailed`` closes it) and
+    whether the page has loaded (``Page.loadEventFired``). WebSocket traffic
+    uses different CDP methods and is deliberately not counted, so persistent
+    sockets never block readiness.
+
+    The quiet clock runs whenever <= ``max_inflight`` requests are pending —
+    including before load — so a page that is already quiet when `load` fires
+    becomes ready immediately, with no mandatory post-load wait. Pure and
+    clock-injected for testability; the async I/O lives in
+    :func:`_wait_load_and_network_idle`.
+    """
+
+    _OPEN = "Network.requestWillBeSent"
+    _CLOSE = ("Network.loadingFinished", "Network.loadingFailed")
+
+    def __init__(
+        self,
+        now: float,
+        *,
+        max_inflight: int = NET_IDLE_MAX_INFLIGHT,
+        quiet_ms: int = NET_QUIET_MS,
+    ):
+        self.max_inflight = max_inflight
+        self.quiet_s = quiet_ms / 1000
+        self.loaded = False
+        self.inflight: set[str] = set()
+        self.quiet_since: float | None = now  # nothing in flight at start
+
+    def on_frame(self, msg: dict, now: float) -> None:
+        method = msg.get("method")
+        if method == "Page.loadEventFired":
+            self.loaded = True
+        elif method == self._OPEN:
+            self.inflight.add(msg["params"]["requestId"])
+        elif method in self._CLOSE:
+            self.inflight.discard(msg["params"]["requestId"])
+        else:
+            return
+        if len(self.inflight) <= self.max_inflight:
+            if self.quiet_since is None:
+                self.quiet_since = now
+        else:
+            self.quiet_since = None
+
+    def ready(self, now: float) -> bool:
+        return (
+            self.loaded
+            and self.quiet_since is not None
+            and now - self.quiet_since >= self.quiet_s
+        )
+
+    def next_deadline(self, now: float) -> float | None:
+        """Earliest future moment ready() could flip true, or None (event-bound)."""
+        if self.loaded and self.quiet_since is not None:
+            return self.quiet_since + self.quiet_s
+        return None
+
+
+async def _wait_load_and_network_idle(
+    ws,
+    msg_id_ref: list,
+    *,
+    max_inflight: int = NET_IDLE_MAX_INFLIGHT,
+    quiet_ms: int = NET_QUIET_MS,
+    cap_ms: int = LOAD_TIMEOUT_MS,
+) -> None:
+    """Wait until the page has loaded AND the network is networkidle2-quiet.
+
+    Owns the websocket while it runs (the per-page CDP flow is sequential, so
+    there is no competing reader) and feeds every frame to a
+    :class:`_NetIdleState`. Returns when the state is ready or after
+    ``cap_ms`` regardless, so a page that never settles (>2 permanently busy
+    connections) can stall a worker for at most the cap — capture then
+    proceeds with whatever is rendered, exactly like the load timeout.
+
+    One frame race is tolerated by design: ``requestWillBeSent`` events emitted
+    before this coroutine starts reading (during the ``Page.navigate``
+    round-trip) are lost, which can only *under*-count in-flight requests. The
+    document request itself is covered by the load gate — an initial
+    ``document.readyState`` probe catches pages whose `load` fired before we
+    started listening (e.g. instant file:// renders).
+    """
+    state = _NetIdleState(
+        time.monotonic(), max_inflight=max_inflight, quiet_ms=quiet_ms
+    )
+    cap_deadline = time.monotonic() + cap_ms / 1000
+
+    # readyState probe, sent raw so the frames that arrive while we wait for
+    # its response are counted rather than discarded by _cdp_send's loop.
+    msg_id_ref[0] += 1
+    probe_id = msg_id_ref[0]
+    await ws.send(
+        json.dumps(
+            {
+                "id": probe_id,
+                "method": "Runtime.evaluate",
+                "params": {
+                    "expression": "document.readyState",
+                    "returnByValue": True,
+                },
+            }
+        )
+    )
+
+    while True:
+        now = time.monotonic()
+        if state.ready(now) or now >= cap_deadline:
+            return
+        deadline = state.next_deadline(now)
+        timeout = (
+            cap_deadline if deadline is None else min(deadline, cap_deadline)
+        ) - now
+        try:
+            frame = await asyncio.wait_for(ws.recv(), timeout=max(timeout, 0.001))
+        except asyncio.TimeoutError:
+            continue  # re-evaluate ready()/cap
+        msg = json.loads(frame)
+        if msg.get("id") == probe_id:
+            try:
+                if msg["result"]["result"]["value"] == "complete":
+                    state.loaded = True
+            except (KeyError, TypeError):
+                pass
+            continue
+        state.on_frame(msg, time.monotonic())
+
+
+def _readiness_expr() -> str:
     """Build the in-page readiness probe.
 
     Always waits for the `load` event before measuring (with a
@@ -197,38 +335,20 @@ def _readiness_expr(wait_network_idle: bool) -> str:
     layout — often much taller than the settled page — producing blank tiles. SSR
     pages (e.g. Wikipedia) fire `load` almost immediately, so this adds ~no cost.
 
-    When ``wait_network_idle`` is set, also waits (after load) until no new
-    resource has been fetched for ``NET_QUIET_MS`` — for SPAs that fetch their
-    content *after* load. This costs a quiet window (>= NET_QUIET_MS, up to
-    LOAD_TIMEOUT_MS) per page and disqualifies the turbo capture path, so it
-    is off by default here; the pixelbrowse skill and the index pipeline's
-    `web` source (arbitrary external URLs) enable it, while kiwix/localhost
-    and file:// batch renders stay on the fast path.
+    Network-idle waiting is NOT done in-page: it runs Python-side over CDP
+    Network events (see :func:`_wait_load_and_network_idle`), which can see
+    in-flight requests — a PerformanceObserver only sees completions, so the
+    old in-page variant reset its quiet timer on every analytics beacon and
+    rode the hard cap on any page with sub-500ms background traffic.
 
     Returns an async-IIFE expression resolving to the page height to tile.
     """
-    idle_step = ""
-    if wait_network_idle:
-        idle_step = f"""
-        await new Promise(res => {{
-            let timer;
-            let obs;
-            const finish = () => {{ try {{ obs && obs.disconnect(); }} catch (e) {{}}
-                                    clearTimeout(timer); clearTimeout(hard); res(); }};
-            const bump = () => {{ clearTimeout(timer); timer = setTimeout(finish, {NET_QUIET_MS}); }};
-            try {{
-                obs = new PerformanceObserver(bump);
-                obs.observe({{ type: 'resource', buffered: true }});
-            }} catch (e) {{}}
-            const hard = setTimeout(finish, {LOAD_TIMEOUT_MS});
-            bump();
-        }});"""
     return f"""(async () => {{
         await new Promise(res => {{
             if (document.readyState === 'complete') return res();
             const t = setTimeout(res, {LOAD_TIMEOUT_MS});
             window.addEventListener('load', () => {{ clearTimeout(t); res(); }}, {{ once: true }});
-        }});{idle_step}
+        }});
         await document.fonts.ready;
         // Let layout settle over two frames — but cap it: requestAnimationFrame
         // never ticks in some headless modes (e.g. google-chrome --headless=new
@@ -295,14 +415,22 @@ async def capture_url(
 
     await _cdp_send(ws, msg_id_ref, "Page.navigate", {"url": url})
 
-    # Wait for load (+ optional network-idle) + fonts + layout to stabilize,
-    # return the page height to tile in one call. See _readiness_expr.
+    # Optional networkidle2 wait, done Python-side over CDP Network events so
+    # it can see in-flight requests (and therefore tolerate persistent
+    # analytics/long-poll connections). Must run before the in-page probe:
+    # frames arriving during a _cdp_send round-trip are discarded, so the
+    # watcher has to be the socket's reader while the page settles.
+    if wait_network_idle:
+        await _wait_load_and_network_idle(ws, msg_id_ref)
+
+    # Wait for load + fonts + layout to stabilize, return the page height to
+    # tile in one call. See _readiness_expr.
     result = await _cdp_send(
         ws,
         msg_id_ref,
         "Runtime.evaluate",
         {
-            "expression": _readiness_expr(wait_network_idle),
+            "expression": _readiness_expr(),
             "awaitPromise": True,
             "returnByValue": True,
         },
@@ -389,8 +517,9 @@ async def _setup_page(
     """Enable the CDP domains and fix the viewport for a page ws before capture."""
     await _cdp_send(ws, msg_id_ref, "Page.enable")
     if wait_network_idle:
-        # PerformanceObserver (used by the idle wait) needs no CDP domain, but
-        # enabling Network keeps resource timing reliable across navigations.
+        # The networkidle2 watcher (_wait_load_and_network_idle) counts
+        # Network.requestWillBeSent / loadingFinished / loadingFailed events;
+        # without this domain enabled Chrome emits none of them.
         await _cdp_send(ws, msg_id_ref, "Network.enable")
     await _cdp_send(
         ws,
@@ -811,6 +940,13 @@ def render_urls(
         or wait_network_idle
         or not from_surface
     ):
+        if wait_network_idle:
+            # Be loud about the trade: users with a turbo-capable Chrome would
+            # otherwise silently lose ~half their capture throughput.
+            logger.info(
+                "wait_network_idle is set: using the standard capture path "
+                "(the turbo path does not implement the idle wait yet)"
+            )
         use_turbo = False
 
     if use_turbo:

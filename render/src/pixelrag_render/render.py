@@ -284,10 +284,12 @@ def main() -> None:
     parser.add_argument(
         "--wait-network-idle",
         action="store_true",
-        help="After the page's load event, also wait until the network is quiet "
-        "(~500ms) before capturing. Helps JS/SPA pages that fetch content after "
-        "load; adds a quiet window per page, so off by default. Recommended for "
-        "single-page renders (e.g. the pixelbrowse skill).",
+        help="After the page's load event, also wait until at most 2 network "
+        "requests have been in flight for ~500ms (networkidle2) before "
+        "capturing, capped at 12s. Helps JS/SPA pages that fetch content "
+        "after load; tolerates persistent analytics/long-poll connections. "
+        "Off by default; the index pipeline's `web` source and the "
+        "pixelbrowse skill enable it.",
     )
     parser.add_argument(
         "--dpi",
