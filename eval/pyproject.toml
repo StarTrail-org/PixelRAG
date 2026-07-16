@@ -1,33 +1,38 @@
 [project]
 name = "pixelrag-repro"
 version = "0.1.0"
-description = "Reproduction harness for the PixelRAG (Vis-RAG) paper Table 1 — drives the paper's own run_naive_simpleqa.py + evaluate.py against live retrieval/reader serves."
+description = "Self-contained reproduction harness for PixelRAG paper Table 1 — runs retrieval + reader + grader against live serves and prints the score."
 requires-python = ">=3.12,<3.13"
-# These are the deps the paper's API-path code (scripts/run_naive_simpleqa.py,
-# scripts/simpleqa, scripts/evaluate.py, evaluation/*) imports when retrieval + reader
-# run as remote HTTP serves (no local torch/vllm needed -- the model serves are separate).
-# The paper repo itself is pinned in REPRODUCE.md (yichuan-w/Vis-RAG @ e591fd0).
+# The base harness (run_bench.py + lib/) is a pure HTTP client — retrieval and reader run
+# as remote serves, so it needs no torch/vllm. Deps use `>=` floors (like the rest of the
+# workspace); uv.lock is the reproducibility contract (`uv sync --frozen`). numpy also
+# carries an upper bound (<2.3) so the optional `reader` extra — which adds vLLM, the
+# CUDA-fragile piece — can resolve alongside the base.
 dependencies = [
-    "aiohttp==3.13.5",
-    "datasets==4.8.5",
-    "openai==2.38.0",
-    "tqdm==4.67.3",
-    "pillow==12.2.0",
-    "requests==2.34.2",
-    "numpy==2.4.6",
-    "selenium==4.44.0",
-    "webdriver-manager==4.1.1",
-    "beautifulsoup4==4.14.3",
-    "lxml==6.1.1",
-    "tiktoken==0.13.0",
-    "trafilatura==2.0.0",
-    "litellm==1.86.2",
-    "botocore==1.43.18",
-    "tenacity==9.1.4",
-    "fastmcp==3.3.1",
-    "omegaconf==2.3.0",
-    "retry==0.9.2",
+    "aiohttp>=3.13.5",
+    "datasets>=4.8.5",
+    "openai>=2.38.0",
+    "tqdm>=4.67.3",
+    "pillow>=12.2.0",
+    "requests>=2.34.2",
+    "numpy>=1.26.0,<2.3",
+    "selenium>=4.44.0",
+    "webdriver-manager>=4.1.1",
+    "beautifulsoup4>=4.14.3",
+    "lxml>=6.1.1",
+    "tiktoken>=0.13.0",
+    "trafilatura>=2.0.0",
+    "litellm>=1.86.2",
+    "botocore>=1.43.18",
+    "tenacity>=9.1.4",
+    "fastmcp>=3.3.1",
+    "omegaconf>=2.3.0",
+    "retry>=0.9.2",
 ]
+
+[project.optional-dependencies]
+# Self-host the Qwen3.5-4B reader (vLLM 0.19.0) from this package: `uv sync --extra reader`.
+reader = ["vllm==0.19.0"]
 
 [tool.uv]
 package = false
