@@ -1418,7 +1418,7 @@ wheels = [
 
 [[package]]
 name = "pixelrag"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
