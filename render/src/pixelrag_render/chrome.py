@@ -16,6 +16,7 @@ Programmatic:
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import tarfile
@@ -32,6 +33,17 @@ RELEASE_URL_TEMPLATE = (
     "https://github.com/StarTrail-org/PixelRAG/releases/download/"
     "chrome-{version}/headless_shell-linux-x64.tar.zst"
 )
+
+
+def _playwright_revision(path: str) -> int:
+    """Integer Playwright Chromium revision embedded in ``path``.
+
+    Playwright caches browsers under ``chromium-<revision>`` with a plain
+    monotonically-increasing integer revision. Paths without a recognizable
+    revision sort last (``-1``) rather than raising.
+    """
+    m = re.search(r"chromium-(\d+)", path)
+    return int(m.group(1)) if m else -1
 
 
 def _candidate_chrome_paths(system: str | None = None) -> list[str]:
@@ -55,8 +67,11 @@ def _candidate_chrome_paths(system: str | None = None) -> list[str]:
     paths.append(str(INSTALL_DIR / "headless_shell"))
 
     def add_playwright(cache_dir: Path, rel_glob: str) -> None:
-        # Newest chromium-NNNN first.
-        paths.extend(sorted(glob.glob(str(cache_dir / rel_glob)), reverse=True))
+        # Newest chromium-NNNN first. Sort by integer revision, not lexically:
+        # a string sort ranks "chromium-999" above "chromium-1187" once the
+        # revision crosses the 3→4 digit boundary, picking an older browser.
+        matches = glob.glob(str(cache_dir / rel_glob))
+        paths.extend(sorted(matches, key=_playwright_revision, reverse=True))
 
     if system == "Darwin":
         add_playwright(

@@ -117,7 +117,7 @@ If you need maximum accuracy at a known fixed compression, use the specialized a
 """
 
 
-def main():
+def main() -> None:
     print(f"=== {REPO_ID} ===")
     print(f"  src: {SRC}")
     with tempfile.TemporaryDirectory() as tmp:

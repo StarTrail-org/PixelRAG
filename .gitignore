@@ -37,33 +37,9 @@ logs/
 *.log
 arxiv
 demos/e2e/output/
-eval/eval_output/
 .superpowers/
 .vercel
 
-# Large local retrieval artifacts (not committed)
-eval/tmp_news_state.db
-eval/live_pixel_full.json
-eval/live_reader_full.json
-eval/frozen_reader_full.json
-eval/mms_base_live.jsonl
-eval/mms_lora_live.jsonl
-eval/mms_naive_live.jsonl
-eval/evqa_base_landmarks_live.jsonl
-eval/evqa_base_inat_live.jsonl
-eval/evqa_lora_landmarks_live.jsonl
-eval/evqa_lora_inat_live.jsonl
-eval/mms_traf_live.jsonl
-eval/evqa_traf_landmarks.jsonl
-eval/evqa_traf_inaturalist.jsonl
-eval/evqa_naive_landmarks.jsonl
-eval/evqa_naive_inaturalist.jsonl
-eval/mms_naive_nothink.jsonl
-eval/evqa_base_landmarks_nothink.jsonl
-eval/evqa_base_inat_nothink.jsonl
-eval/evqa_lora_landmarks_nothink.jsonl
-eval/evqa_lora_inat_nothink.jsonl
-eval/paper_grader_out/
 node_modules/
 .next/
 

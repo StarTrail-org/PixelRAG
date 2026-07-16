@@ -274,7 +274,7 @@ def extract_url_from_metadata(example: dict) -> str | None:
         url_match = re.search(r"https?://[^\s<>\"{}|\\^`\[\]]+", target_url)
         target_url = url_match.group(0) if url_match else None
 
-    # Note by Yichuan: strip URL fragment (#section) so that URLs differing
+    # Note: strip URL fragment (#section) so that URLs differing
     # only by anchor are treated as the same page for deduplication and
     # retrieval-accuracy matching.
     if target_url and "#" in target_url:

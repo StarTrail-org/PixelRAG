@@ -264,13 +264,14 @@ def scan_shard_tiles(
         if not meta.get("complete", False):
             continue
 
-        # Extract article_id from directory name: "3104240.png.tiles" -> 3104240
-        dir_name = tiles_dir.name  # e.g. "3104240.png.tiles"
-        try:
-            article_id = int(dir_name.split(".")[0])
-        except (ValueError, IndexError):
-            logger.warning("Cannot parse article_id from %s", dir_name)
-            continue
+        article_id = meta.get("article_id")
+        if article_id is None:
+            dir_name = tiles_dir.name
+            try:
+                article_id = int(dir_name.split(".")[0])
+            except (ValueError, IndexError):
+                logger.warning("Cannot parse article_id from %s", dir_name)
+                continue
 
         if article_id in skip:
             continue
@@ -343,12 +344,23 @@ def scan_shard_chunks(
             logger.warning("Skipping %s: %s", chunks_json, e)
             continue
 
-        dir_name = tiles_dir.name
-        try:
-            article_id = int(dir_name.split(".")[0])
-        except (ValueError, IndexError):
-            logger.warning("Cannot parse article_id from %s", dir_name)
-            continue
+        article_id = meta.get("article_id")
+        if article_id is None:
+            # chunks.json predates the article_id contract — try the sibling
+            # tiles.json (CPU embedder does the same), then the directory name.
+            tiles_json = tiles_dir / "tiles.json"
+            if tiles_json.exists():
+                try:
+                    article_id = json.loads(tiles_json.read_text()).get("article_id")
+                except (json.JSONDecodeError, OSError):
+                    pass
+        if article_id is None:
+            dir_name = tiles_dir.name
+            try:
+                article_id = int(dir_name.split(".")[0])
+            except (ValueError, IndexError):
+                logger.warning("Cannot parse article_id from %s", dir_name)
+                continue
 
         if article_id in skip:
             continue

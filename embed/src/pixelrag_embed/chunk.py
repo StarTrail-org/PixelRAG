@@ -127,6 +127,7 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
     page_height = meta.get("page_height", 0)
     viewport_width = meta.get("viewport_width", 875)
     tile_height = meta.get("tile_height", 8192)
+    article_id = meta.get("article_id")  # propagate from tiles.json into chunks.json
 
     chunks_info = []  # list of {tile, chunk_index, file, y_offset, height}
     files_written = 0
@@ -229,6 +230,8 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
         "tile_hashes": tile_hashes,
         "chunks": chunks_info,
     }
+    if article_id is not None:
+        manifest["article_id"] = article_id
 
     if not dry_run:
         with open(chunks_json, "w") as f:

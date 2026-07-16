@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -79,15 +80,30 @@ def scan_chunks(shard_dir: str) -> list[dict]:
             )
 
         for td in tile_dirs:
-            dir_name = td.name
-            article_id_str = dir_name.replace(".png.tiles", "")
-            try:
-                article_id = int(article_id_str)
-            except ValueError:
-                article_id = hash(article_id_str) % (2**31)
-
             chunks_json = td / "chunks.json"
             tiles_json = td / "tiles.json"
+
+            # Read article_id from the manifest (written by the pipeline).
+            # Fall back to parsing the directory name for backward compat
+            # with indexes built before this change.
+            article_id = None
+            for mf in (chunks_json, tiles_json):
+                if mf.exists() and article_id is None:
+                    try:
+                        article_id = json.loads(mf.read_text()).get("article_id")
+                    except (json.JSONDecodeError, OSError):
+                        pass
+            if article_id is None:
+                article_id_str = td.name.replace(".png.tiles", "")
+                try:
+                    article_id = int(article_id_str)
+                except ValueError:
+                    # Non-numeric dir name with no manifest article_id. Use a
+                    # stable hash (builtin hash() is salted by PYTHONHASHSEED and
+                    # would give a different id every build -> non-reproducible
+                    # index). sha1 keeps the same id for the same dir name.
+                    digest = hashlib.sha1(article_id_str.encode()).hexdigest()
+                    article_id = int(digest[:8], 16)
 
             if chunks_json.exists():
                 with open(chunks_json) as f:

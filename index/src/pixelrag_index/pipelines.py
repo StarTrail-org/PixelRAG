@@ -28,6 +28,10 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     tiles_dir = output / "tiles"
     embeddings_dir = output / "embeddings"
     ingest_cfg = config.get("ingest", {})
+    # Default to waiting for network idle — most modern pages are JS-rendered
+    # SPAs that produce blank/incomplete tiles without this. Users can opt out
+    # with `ingest: {wait_network_idle: false}` in their pixelrag.yaml.
+    ingest_cfg.setdefault("wait_network_idle", True)
     embed_cfg = config.get("embed", {})
     device = embed_cfg.get("device", "cpu")
 
@@ -167,14 +171,66 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
                 )
         logger.info("  Rendered %d text files (.md/.txt)", len(text_docs))
 
-    # Render PDFs
+    # Render PDFs — use idx as tile directory name (like URLs) so directory
+    # names are always the numeric article_id.
     for idx, doc in pdf_docs:
         try:
-            render_pdf(doc.path, str(tiles_dir))
+            render_pdf(doc.path, str(tiles_dir), stem=str(idx))
         except Exception as e:
             logger.warning("  FAILED PDF %s: %s", doc.id, e)
     if pdf_docs:
         logger.info("  Rendered %d PDFs", len(pdf_docs))
+
+    # Render local images (PNG/JPG) — copy/resize into the tile directory structure
+    if image_docs:
+        from PIL import Image as PILImage
+
+        _MAX_WIDTH = 4000  # cap large images to avoid VRAM pressure during embedding
+
+        for idx, doc in image_docs:
+            tile_dir = tiles_dir / f"{idx}.png.tiles"
+            if (tile_dir / "tiles.json").exists():
+                continue
+            tile_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                img = PILImage.open(doc.path).convert("RGB")
+                # Resize if too wide
+                if img.width > _MAX_WIDTH:
+                    ratio = _MAX_WIDTH / img.width
+                    img = img.resize(
+                        (int(img.width * ratio), int(img.height * ratio)),
+                        PILImage.LANCZOS,
+                    )
+                tile_path = tile_dir / "tile_0000.jpg"
+                img.save(tile_path, "JPEG", quality=90)
+                manifest = {
+                    "url": doc.path,
+                    "page_height": img.height,
+                    "tiles": ["tile_0000.jpg"],
+                    "complete": True,
+                }
+                with open(tile_dir / "tiles.json", "w") as f:
+                    json.dump(manifest, f)
+            except Exception as e:
+                logger.warning("  FAILED image %s: %s", doc.id, e)
+        logger.info("  Rendered %d local images", len(image_docs))
+
+    # Write article_id into each tile directory's manifests so the embed
+    # pipeline reads it explicitly instead of guessing from the directory name.
+    # tiles.json always exists here; chunks.json exists only for PDFs (pdf.py
+    # writes it at render time, and chunk.py then skips those dirs). For every
+    # other source chunks.json is created by Stage 2's chunk.py, which
+    # propagates article_id from tiles.json. So write whichever exist now.
+    for idx, _ in url_docs + text_docs + pdf_docs + image_docs:
+        for manifest_name in ("tiles.json", "chunks.json"):
+            manifest_path = tiles_dir / f"{idx}.png.tiles" / manifest_name
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                    manifest["article_id"] = idx
+                    manifest_path.write_text(json.dumps(manifest))
+                except (json.JSONDecodeError, OSError):
+                    pass
 
     # Save articles.json for serve API — title + URL per article.
     # Use the pipeline's sequential *position index* (0, 1, 2, …) rather than

@@ -19,6 +19,23 @@ import json
 import os
 import random
 from pathlib import Path
+from typing import TypedDict
+
+
+class RetrievalHit(TypedDict):
+    path: str
+    score: float | None
+    article_id: int | None
+    url: str | None
+
+
+class RetrievalRow(TypedDict):
+    query: str
+    answer: str
+    gold_path_rel: str
+    gold_suffix: str
+    hits: list[RetrievalHit]
+    gold_in_top6_pos: int
 
 
 def shard_suffix(p: str) -> str:
@@ -29,7 +46,9 @@ def shard_suffix(p: str) -> str:
     return p
 
 
-def build_variable_image_set(row: dict, rng: random.Random, k_min: int, k_max: int):
+def build_variable_image_set(
+    row: RetrievalRow, rng: random.Random, k_min: int, k_max: int
+) -> tuple[list[str], int, int]:
     """Sample k ~ Uniform[k_min, k_max], return (shard_suffixes, gold_pos, k)."""
     gold = row["gold_suffix"]
     hit_sufs = [shard_suffix(h["path"]) for h in row["hits"]]
@@ -45,7 +64,7 @@ def build_variable_image_set(row: dict, rng: random.Random, k_min: int, k_max: i
     return shuffled, gold_pos, k
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--retrieval-dir",
@@ -96,8 +115,6 @@ def main():
         dataset_info = json.loads(info_path.read_text())
     else:
         dataset_info = {}
-
-    {k: 0 for k in range(args.k_min, args.k_max + 1)}
 
     for split in args.splits:
         p_in = retrieval_dir / f"{split}.jsonl"
