@@ -1,7 +1,10 @@
 """End-to-end pipeline: source -> ingest -> chunk -> embed -> build."""
 
 import argparse
+import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +12,45 @@ from pathlib import Path
 from .config import load_config, make_source
 
 logger = logging.getLogger("pixelrag-index")
+
+
+def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
+    """True if {idx}.png.tiles must be (re)rendered for doc.
+
+    An existing tile directory is reusable only if its manifest parses and
+    records the same source document (``source``, falling back to the legacy
+    ``url`` field) as the doc that now occupies position ``idx``. Position
+    indices shift whenever the source set changes between runs (a file added,
+    removed, or renamed) — reusing the directory then would silently pair one
+    document's pixels with another document's metadata. On mismatch the stale
+    directory is removed and re-rendered; corrupt manifests (e.g. a crash
+    mid-write) are likewise re-rendered instead of poisoning later stages.
+    """
+    tile_dir = tiles_dir / f"{idx}.png.tiles"
+    manifest_path = tile_dir / "tiles.json"
+    if not manifest_path.exists():
+        return True
+    expected = doc.url or doc.path
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        recorded = manifest.get("source") or manifest.get("url")
+    except (json.JSONDecodeError, OSError):
+        logger.warning("  Corrupt manifest in %s — re-rendering", tile_dir.name)
+        recorded = None
+    if recorded == expected:
+        return False
+    if recorded is not None:
+        logger.warning(
+            "  %s was rendered from %r but position %d now holds %r — "
+            "re-rendering (source set changed between runs; use --force "
+            "for a clean rebuild)",
+            tile_dir.name,
+            recorded,
+            idx,
+            expected,
+        )
+    shutil.rmtree(tile_dir, ignore_errors=True)
+    return True
 
 
 def _department_of(article: dict, source_root: str) -> str:
@@ -66,8 +108,6 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     device = embed_cfg.get("device", "cpu")
 
     if force:
-        import shutil
-
         for d in (tiles_dir, embeddings_dir):
             if d.exists():
                 shutil.rmtree(d)
@@ -76,7 +116,6 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
 
     # Stage 1: Render documents to tiles
     # Use sequential integer IDs as tile directory names so embed/serve can map them
-    import json
     from pixelrag_render.render import render_urls, render_pdf
 
     logger.info("Stage 1/4: Rendering %d documents to tiles...", len(docs))
@@ -110,9 +149,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     # Render URL batch — skip already-captured articles
     if url_docs:
         new_url_docs = [
-            (idx, d)
-            for idx, d in url_docs
-            if not (tiles_dir / f"{idx}.png.tiles" / "tiles.json").exists()
+            (idx, d) for idx, d in url_docs if _needs_render(tiles_dir, idx, d)
         ]
         if new_url_docs:
             urls = [d.url for _, d in new_url_docs]
@@ -172,7 +209,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
 
         with tempfile.TemporaryDirectory(prefix="pixelrag_text_") as tmp_dir:
             for idx, doc in text_docs:
-                if (tiles_dir / f"{idx}.png.tiles" / "tiles.json").exists():
+                if not _needs_render(tiles_dir, idx, doc):
                     continue
                 src_path = Path(doc.path)
                 content = src_path.read_text(errors="replace")
@@ -204,9 +241,8 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     # Render PDFs — use idx as tile directory name (like URLs) so directory
     # names are always the numeric article_id.
     for idx, doc in pdf_docs:
-        out_dir = tiles_dir / f"{idx}.png.tiles"
-        if (out_dir / "tiles.json").exists():
-            continue  # already rendered on a previous run
+        if not _needs_render(tiles_dir, idx, doc):
+            continue  # already rendered for this same document
         try:
             render_pdf(doc.path, str(tiles_dir), stem=str(idx))
         except Exception as e:
@@ -221,9 +257,9 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
         _MAX_WIDTH = 4000  # cap large images to avoid VRAM pressure during embedding
 
         for idx, doc in image_docs:
-            tile_dir = tiles_dir / f"{idx}.png.tiles"
-            if (tile_dir / "tiles.json").exists():
+            if not _needs_render(tiles_dir, idx, doc):
                 continue
+            tile_dir = tiles_dir / f"{idx}.png.tiles"
             tile_dir.mkdir(parents=True, exist_ok=True)
             try:
                 img = PILImage.open(doc.path).convert("RGB")
@@ -248,22 +284,34 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
                 logger.warning("  FAILED image %s: %s", doc.id, e)
         logger.info("  Rendered %d local images", len(image_docs))
 
-    # Write article_id into each tile directory's manifests so the embed
-    # pipeline reads it explicitly instead of guessing from the directory name.
-    # tiles.json always exists here; chunks.json exists only for PDFs (pdf.py
-    # writes it at render time, and chunk.py then skips those dirs). For every
-    # other source chunks.json is created by Stage 2's chunk.py, which
-    # propagates article_id from tiles.json. So write whichever exist now.
-    for idx, _ in url_docs + text_docs + pdf_docs + image_docs:
+    # Write article_id and the source identity into each tile directory's
+    # manifests, so the embed pipeline reads the id explicitly instead of
+    # guessing from the directory name, and so the next run's _needs_render
+    # can detect stale directories after the source set changes. tiles.json
+    # always exists here; chunks.json exists only for PDFs (pdf.py writes it
+    # at render time, and chunk.py then skips those dirs). For every other
+    # source chunks.json is created by Stage 2's chunk.py, which propagates
+    # article_id from tiles.json. So write whichever exist now.
+    for idx, doc in url_docs + text_docs + pdf_docs + image_docs:
+        identity = doc.url or doc.path
         for manifest_name in ("tiles.json", "chunks.json"):
             manifest_path = tiles_dir / f"{idx}.png.tiles" / manifest_name
-            if manifest_path.exists():
-                try:
-                    manifest = json.loads(manifest_path.read_text())
-                    manifest["article_id"] = idx
-                    manifest_path.write_text(json.dumps(manifest))
-                except (json.JSONDecodeError, OSError):
-                    pass
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                logger.warning("  Could not stamp unreadable %s", manifest_path)
+                continue
+            if manifest.get("article_id") == idx and manifest.get("source") == identity:
+                continue  # already stamped — skip the rewrite
+            manifest["article_id"] = idx
+            manifest["source"] = identity
+            # Atomic replace: a crash mid-write must not truncate the manifest
+            # (a corrupt tiles.json would otherwise poison every later stage).
+            tmp_path = manifest_path.with_name(manifest_name + ".tmp")
+            tmp_path.write_text(json.dumps(manifest))
+            os.replace(tmp_path, manifest_path)
 
     # Save articles.json for serve API — title + URL per article.
     # Use the pipeline's sequential *position index* (0, 1, 2, …) rather than

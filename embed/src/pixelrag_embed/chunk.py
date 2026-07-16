@@ -85,7 +85,13 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
         raw = f.read().strip()
     if not raw:
         return None
-    meta = json.loads(raw)
+    try:
+        meta = json.loads(raw)
+    except json.JSONDecodeError:
+        # A truncated manifest (crash mid-write) must not take down the whole
+        # shard/build — skip this article like other unreadable dirs.
+        logger.warning("Corrupt tiles.json in %s — skipping", article_dir)
+        return None
 
     tile_names = meta.get("tiles", [])
     if not tile_names:
