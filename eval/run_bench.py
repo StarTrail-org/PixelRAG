@@ -983,7 +983,7 @@ async def run_async(args):
             if args.api_base
             else (model_config["api_base"] or "http://localhost:8000/v1")
         )
-        api_key = args.api_key if args.api_key else model_config["api_key"]
+        api_key = args.api_key if args.api_key else (model_config["api_key"] or "dummy")
         model = model_config["model"]
 
     # Generate output filename with model name if output is not explicitly set
@@ -1299,9 +1299,18 @@ def main():
 
     # API args
     parser.add_argument(
-        "--api-base", type=str, default="http://localhost:8000/v1", help="API base URL"
+        "--api-base",
+        type=str,
+        default=None,
+        help="API base URL (default: the model config's endpoint, "
+        "else http://localhost:8000/v1)",
     )
-    parser.add_argument("--api-key", type=str, default="dummy", help="API key")
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key (default: the model config's key, else 'dummy')",
+    )
     parser.add_argument(
         "--open-router",
         action="store_true",
