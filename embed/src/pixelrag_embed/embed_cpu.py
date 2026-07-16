@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -202,6 +203,12 @@ def embed_items(
             pooled = last_hidden[0, last_idx[0]]
             pooled = pooled / pooled.norm()
             embeddings[i] = pooled.cpu().numpy().astype(np.float16)
+
+        # tqdm covers interactive runs but never reaches log files; when
+        # stderr is not a TTY (nohup/CI/redirects) emit a periodic record so
+        # long embeds stay observable after the fact.
+        if (i + 1) % 100 == 0 and not sys.stderr.isatty():
+            logger.info("Embedded %d/%d", i + 1, len(items))
 
     return embeddings
 

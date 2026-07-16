@@ -293,6 +293,7 @@ def process_shard(
     dry_run: bool = False,
     force: bool = False,
     delete_tiles: bool = False,
+    progress: bool = True,
 ) -> dict:
     """Chunk all articles in a shard directory."""
     t0 = time.time()
@@ -321,9 +322,10 @@ def process_shard(
         if article_dir.is_dir() and article_dir.name.endswith(".png.tiles")
     ]
 
-    for article_dir in tqdm(
-        all_article_dirs, desc="Chunking", disable=not all_article_dirs
-    ):
+    # The bar is disabled when this runs inside a ProcessPoolExecutor worker
+    # (--tiles-dir mode): up to 96 concurrent bars would trample each other
+    # on one terminal. The parent shows a shard-level bar instead.
+    for article_dir in tqdm(all_article_dirs, desc="Chunking", disable=not progress):
         total_articles += 1
 
         result = chunk_article(str(article_dir), dry_run=dry_run, force=force)
@@ -429,11 +431,18 @@ def main():
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(
-                process_shard, sd, args.dry_run, args.force, args.delete_tiles
+                process_shard,
+                sd,
+                args.dry_run,
+                args.force,
+                args.delete_tiles,
+                progress=False,
             ): sd
             for sd in shard_dirs
         }
-        for fut in as_completed(futures):
+        for fut in tqdm(
+            as_completed(futures), total=len(futures), desc="Chunking shards"
+        ):
             sd = futures[fut]
             try:
                 r = fut.result()
