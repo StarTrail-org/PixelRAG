@@ -262,7 +262,20 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             tile_dir = tiles_dir / f"{idx}.png.tiles"
             tile_dir.mkdir(parents=True, exist_ok=True)
             try:
-                img = PILImage.open(doc.path).convert("RGB")
+                img = PILImage.open(doc.path)
+                # JPEG has no alpha: composite transparent images onto white
+                # before dropping the channel. A bare convert("RGB") maps
+                # fully-transparent pixels to their underlying RGB — black for
+                # typical chart/logo exports — turning them into dark garbage.
+                if img.mode in ("RGBA", "LA", "PA") or (
+                    img.mode == "P" and "transparency" in img.info
+                ):
+                    rgba = img.convert("RGBA")
+                    background = PILImage.new("RGB", rgba.size, "white")
+                    background.paste(rgba, mask=rgba.getchannel("A"))
+                    img = background
+                else:
+                    img = img.convert("RGB")
                 # Resize if too wide
                 if img.width > _MAX_WIDTH:
                     ratio = _MAX_WIDTH / img.width
