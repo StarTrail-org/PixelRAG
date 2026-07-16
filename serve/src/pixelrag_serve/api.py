@@ -32,6 +32,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import base64
 import contextvars
 import functools
@@ -462,7 +463,10 @@ async def search(req: SearchRequest):
                 with open(tile_path, "rb") as fp:
                     img_b64 = base64.b64encode(fp.read()).decode()
             elif req.include_images and _state.get("ondemand") is not None:
-                img_b64 = _ondemand_chunk_b64(aid, ti, ci, th)
+                # Render off the event loop: _ondemand_chunk_b64 -> render_url uses
+                # asyncio.run(), which raises "cannot be called from a running event
+                # loop" if invoked directly here. Offload to a worker thread.
+                img_b64 = await asyncio.to_thread(_ondemand_chunk_b64, aid, ti, ci, th)
             # Expose a relative tile path, not the absolute server filesystem
             # path (avoids leaking the host's directory layout; clients fetch
             # tiles via /tile/{article_id}/{tile_index}/{chunk_index}).
@@ -575,11 +579,19 @@ def load(args):
     device = args.device
     dtype = torch.float32 if device == "cpu" else torch.bfloat16
 
-    # Load FAISS index
+    # Load FAISS index. PIXELRAG_INDEX_MMAP=1 memory-maps the index instead of reading the
+    # whole file into RAM — startup is near-instant (no full read of a multi-100G index over
+    # NFS), and inverted lists are paged in on demand at query time. Great when only a subset
+    # of the index is touched (e.g. a few hundred eval queries); the OS page cache keeps hot
+    # lists resident across queries.
     index_path = os.path.join(args.index_dir, "index.faiss")
     logger.info("Loading FAISS index from %s...", index_path)
     t0 = time.time()
-    index = faiss.read_index(index_path)
+    if os.environ.get("PIXELRAG_INDEX_MMAP"):
+        logger.info("(mmap mode: lists paged in on demand)")
+        index = faiss.read_index(index_path, faiss.IO_FLAG_MMAP)
+    else:
+        index = faiss.read_index(index_path)
     logger.info("Loaded index: %d vectors in %.1fs", index.ntotal, time.time() - t0)
 
     # Load metadata

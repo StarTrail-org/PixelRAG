@@ -12,6 +12,8 @@ EXTENSIONS = {
     ".png": "image",
     ".jpg": "image",
     ".jpeg": "image",
+    ".md": "text",
+    ".txt": "text",
 }
 
 
@@ -32,6 +34,12 @@ class LocalSource(Source):
                     id=f.stem,
                     url=f"file://{f.resolve()}",
                     metadata={"type": ftype},
+                )
+            elif ftype == "text":
+                yield Document(
+                    id=f.stem,
+                    path=str(f),
+                    metadata={"type": "text", "extension": f.suffix.lower()},
                 )
             else:
                 yield Document(

@@ -11,9 +11,21 @@ Usage:
 
 import logging
 import os
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_stem(example_id: str) -> str:
+    """Strip directory components from an id before using it in a filename.
+
+    ``Path(x).name`` keeps only the final path component, which never contains a
+    path separator and is never absolute — so a crafted id like ``../../evil`` can
+    no longer escape the output directory (path traversal).
+    """
+    return Path(str(example_id)).name
+
 
 # Default font paths (tried in order)
 _FONT_CANDIDATES = [
@@ -118,7 +130,7 @@ class PixelQueryRenderer:
 
         If the image already exists on disk it is *not* re-rendered.
         """
-        out_path = os.path.join(self.output_dir, f"{example_id}_query.png")
+        out_path = os.path.join(self.output_dir, f"{_safe_stem(example_id)}_query.png")
         if os.path.exists(out_path):
             return out_path
 
@@ -140,7 +152,7 @@ class PixelQueryRenderer:
         rendered, cached = 0, 0
         for ex in examples:
             eid = ex["id"]
-            path = os.path.join(self.output_dir, f"{eid}_query.png")
+            path = os.path.join(self.output_dir, f"{_safe_stem(eid)}_query.png")
             if os.path.exists(path):
                 cached += 1
             else:
@@ -270,7 +282,9 @@ class QueryImageTextRenderer:
         Returns:
             Path to the saved PNG.
         """
-        out_path = os.path.join(self.output_dir, f"{example_id}_query_card.png")
+        out_path = os.path.join(
+            self.output_dir, f"{_safe_stem(example_id)}_query_card.png"
+        )
         if os.path.exists(out_path) and not force:
             return out_path
 

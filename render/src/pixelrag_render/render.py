@@ -132,7 +132,9 @@ def render_pdf(
     """
     from .backends.pdf import render_pdf as _render_pdf
 
-    return _render_pdf(path, output_dir, dpi=dpi, pages=pages, quality=quality, stem=stem)
+    return _render_pdf(
+        path, output_dir, dpi=dpi, pages=pages, quality=quality, stem=stem
+    )
 
 
 def render_file(

@@ -153,6 +153,19 @@ def _build_fewshot_turns(demos: list[dict], encode_image_fn) -> list[dict]:
     return turns
 
 
+def _tile_image_b64(img, encode_image_fn):
+    """Base64 PNG for a retrieved tile. The serve returns a tile either as a local
+    file path (a tile corpus is mounted) or as inline base64 bytes (the reader has
+    no local tiles — public-API / on-demand-render modes). Handle both so the reader
+    actually sees the retrieved evidence instead of silently dropping it."""
+    if not isinstance(img, str):
+        return None
+    if os.path.exists(img):
+        return encode_image_fn(img) if encode_image_fn else None
+    # No file at this path -> the serve returned the tile inline as base64.
+    return img if len(img) > 256 else None
+
+
 def build_messages(
     query: str,
     retrieval_result: RetrievalResult,
@@ -233,20 +246,19 @@ def build_messages(
         # Add retrieved tiles
         if retrieval_result.images:
             for img_path, score in retrieval_result.images:
-                if os.path.exists(img_path):
-                    try:
-                        img_base64 = encode_image_fn(img_path)
-                        if img_base64:
-                            user_content.append(
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/png;base64,{img_base64}"
-                                    },
-                                }
-                            )
-                    except Exception as e:
-                        logger.warning(f"Failed to encode image {img_path}: {e}")
+                try:
+                    img_base64 = _tile_image_b64(img_path, encode_image_fn)
+                    if img_base64:
+                        user_content.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_base64}"
+                                },
+                            }
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to encode tile: {e}")
 
         return [
             {"role": "system", "content": system_prompt},
@@ -278,40 +290,34 @@ def build_messages(
         system_prompt = SYSTEM_PROMPT_TEXT_RAG
         user_content = []
         for img_path, score in retrieval_result.images:
-            if os.path.exists(img_path):
-                try:
-                    img_base64 = encode_image_fn(img_path)
-                    if img_base64:
-                        user_content.append(
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{img_base64}"
-                                },
-                            }
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to encode image {img_path}: {e}")
+            try:
+                img_base64 = _tile_image_b64(img_path, encode_image_fn)
+                if img_base64:
+                    user_content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{img_base64}"},
+                        }
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to encode tile: {e}")
         user_content.append({"type": "text", "text": f"Question: {query}"})
     elif retrieval_result.images and encode_image_fn:
         system_prompt = SYSTEM_PROMPT_VECTOR
         user_content = [{"type": "text", "text": query}]
         # Encode and add retrieved images
         for img_path, score in retrieval_result.images:
-            if os.path.exists(img_path):
-                try:
-                    img_base64 = encode_image_fn(img_path)
-                    if img_base64:
-                        user_content.append(
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{img_base64}"
-                                },
-                            }
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to encode image {img_path}: {e}")
+            try:
+                img_base64 = _tile_image_b64(img_path, encode_image_fn)
+                if img_base64:
+                    user_content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{img_base64}"},
+                        }
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to encode tile: {e}")
     elif retrieval_result.text:
         system_prompt = SYSTEM_PROMPT_TEXT_RAG
         # Option 1 (2026-04-29): no `Context from {urls}:` wrapper. URL leak gave
@@ -353,18 +359,17 @@ def _encode_images_to_content(
     """Encode image paths to base64 content blocks."""
     content = []
     for img_path, score in images:
-        if os.path.exists(img_path):
-            try:
-                img_base64 = encode_image_fn(img_path)
-                if img_base64:
-                    content.append(
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{img_base64}"},
-                        }
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to encode image {img_path}: {e}")
+        try:
+            img_base64 = _tile_image_b64(img_path, encode_image_fn)
+            if img_base64:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{img_base64}"},
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to encode tile: {e}")
     return content
 
 
