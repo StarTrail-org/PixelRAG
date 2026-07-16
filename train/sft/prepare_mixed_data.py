@@ -20,7 +20,7 @@ COMPRESSIONS = ["2x", "3x", "5x", "9x"]
 BASE = "/scratch/users/zwcolin/cxr_embeds/sft_data"
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--output-dir", default=f"{BASE}/compressed_mixed")
     p.add_argument("--seed", type=int, default=42)

@@ -20,6 +20,7 @@ def render_pdf(
     dpi: int = 200,
     pages: Optional[list[int]] = None,
     quality: int = 85,
+    stem: str | None = None,
 ) -> list[Path]:
     """Render a PDF to JPEG tiles.
 
@@ -32,6 +33,9 @@ def render_pdf(
         dpi: Resolution for rendering (default 200 gives ~1650×2200px for A4).
         pages: 1-based list of page numbers to render. ``None`` renders all pages.
         quality: JPEG quality 1-100 (default 85).
+        stem: Override for the tile directory name. Defaults to the PDF filename
+            stem. The pipeline passes the article_id here so directory names
+            are always numeric and consistent with articles.json.
 
     Returns:
         List containing the single tile directory Path on success.
@@ -55,7 +59,8 @@ def render_pdf(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = path.stem
+    if stem is None:
+        stem = path.stem
     tile_dir = output_dir / f"{stem}.png.tiles"
     tile_dir.mkdir(parents=True, exist_ok=True)
 
