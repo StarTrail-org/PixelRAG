@@ -21,6 +21,13 @@ dependencies = [
     "pyturbojpeg>=2.2.0",
     "cef-capi-py>=131.3.5",
     "anthropic>=0.102.0",
+    # Light, pure-Python utilities the umbrella CLI and the non-torch stage code
+    # (chunk / config parsing / progress bars) import at module load. Kept in core
+    # — not the heavy `embed`/`index` extras — so `pixelrag chunk`, `pixelrag index`,
+    # and the torch-free test suite import cleanly without pulling torch/faiss.
+    "numpy>=1.26.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.60.0",
 ]
 
 [project.optional-dependencies]
@@ -29,20 +36,17 @@ embed = [
     "torchvision>=0.24.0",
     "transformers>=4.57.0",
     "faiss-cpu>=1.9.0",
-    "numpy>=1.26.0",
-    "tqdm>=4.60.0",
 ]
 serve = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
-    "numpy>=1.26.0",
     "faiss-cpu>=1.9.0",
     "transformers>=4.57.0",
     "torch>=2.9.0",
     "qwen-vl-utils",
     "pydantic>=2.0.0",
 ]
-index = ["pixelrag[embed]", "pyyaml>=6.0", "markdown>=3.4"]
+index = ["pixelrag[embed]", "markdown>=3.4"]
 all = ["pixelrag[embed,serve,index]"]
 gpu = ["faiss-gpu-cu12>=1.13.2; sys_platform == 'linux'"]
 playwright = ["playwright>=1.40.0"]
@@ -52,7 +56,6 @@ distributed = ["boto3>=1.42.0"]
 eval = [
     "pandas>=2.0",
     "Pillow>=10.0",
-    "tqdm>=4.60",
     "trafilatura>=1.6",
     "openai>=1.0",
     "aiohttp>=3.9",
