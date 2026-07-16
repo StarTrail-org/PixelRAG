@@ -1,7 +1,10 @@
 """End-to-end pipeline: source -> ingest -> chunk -> embed -> build."""
 
 import argparse
+import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +12,67 @@ from pathlib import Path
 from .config import load_config, make_source
 
 logger = logging.getLogger("pixelrag-index")
+
+
+def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
+    """True if {idx}.png.tiles must be (re)rendered for doc.
+
+    An existing tile directory is reusable only if its manifest parses and
+    records the same source document (``source``, falling back to the legacy
+    ``url`` field) as the doc that now occupies position ``idx``. Position
+    indices shift whenever the source set changes between runs (a file added,
+    removed, or renamed) — reusing the directory then would silently pair one
+    document's pixels with another document's metadata. On mismatch the stale
+    directory is removed and re-rendered; corrupt manifests (e.g. a crash
+    mid-write) are likewise re-rendered instead of poisoning later stages.
+    """
+    tile_dir = tiles_dir / f"{idx}.png.tiles"
+    manifest_path = tile_dir / "tiles.json"
+    if not manifest_path.exists():
+        return True
+    expected = doc.url or doc.path
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        recorded = manifest.get("source") or manifest.get("url")
+    except (json.JSONDecodeError, OSError):
+        logger.warning("  Corrupt manifest in %s — re-rendering", tile_dir.name)
+        recorded = None
+    if recorded == expected:
+        return False
+    if recorded is not None:
+        logger.warning(
+            "  %s was rendered from %r but position %d now holds %r — "
+            "re-rendering (source set changed between runs; use --force "
+            "for a clean rebuild)",
+            tile_dir.name,
+            recorded,
+            idx,
+            expected,
+        )
+    shutil.rmtree(tile_dir, ignore_errors=True)
+    return True
+
+
+def _department_of(article: dict, source_root: str) -> str:
+    """Department = first sub-directory under the source root holding the file.
+
+    Files directly under the root, non-local documents (web URLs), or paths
+    outside the root have no department ("").
+    """
+    raw = article.get("path") or ""
+    if not raw:
+        url = article.get("url") or ""
+        if url.startswith("file://"):
+            from urllib.parse import unquote, urlparse
+
+            raw = unquote(urlparse(url).path)
+    if not raw or not source_root:
+        return ""
+    try:
+        rel = Path(raw).resolve().relative_to(Path(source_root).expanduser().resolve())
+    except ValueError:
+        return ""
+    return rel.parts[0] if len(rel.parts) > 1 else ""
 
 
 def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
@@ -27,13 +91,23 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     output = Path(config.get("output", "./index"))
     tiles_dir = output / "tiles"
     embeddings_dir = output / "embeddings"
-    ingest_cfg = config.get("ingest", {})
+    # Copy so the pop/setdefault below never mutate the caller's dict (or the
+    # module-level DEFAULT_CONFIG when the yaml has no `ingest:` section).
+    ingest_cfg = dict(config.get("ingest", {}))
+    # Wait for network idle by default only for the `web` source (arbitrary
+    # external URLs), where JS-rendered SPAs fetch content after `load` and
+    # would otherwise produce blank/incomplete tiles. Everything else — kiwix
+    # (localhost), local text docs (file://) — has its assets ready before
+    # `load` fires (see docs/screenshot-throughput-optimization.md), and the
+    # idle wait would cost >=500ms per page AND disqualify the turbo capture
+    # path (cdp.py forces the standard path when wait_network_idle is set).
+    # An explicit `ingest: {wait_network_idle: ...}` in pixelrag.yaml wins.
+    if config.get("source", {}).get("type") == "web":
+        ingest_cfg.setdefault("wait_network_idle", True)
     embed_cfg = config.get("embed", {})
     device = embed_cfg.get("device", "cpu")
 
     if force:
-        import shutil
-
         for d in (tiles_dir, embeddings_dir):
             if d.exists():
                 shutil.rmtree(d)
@@ -42,7 +116,6 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
 
     # Stage 1: Render documents to tiles
     # Use sequential integer IDs as tile directory names so embed/serve can map them
-    import json
     from pixelrag_render.render import render_urls, render_pdf
 
     logger.info("Stage 1/4: Rendering %d documents to tiles...", len(docs))
@@ -76,9 +149,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     # Render URL batch — skip already-captured articles
     if url_docs:
         new_url_docs = [
-            (idx, d)
-            for idx, d in url_docs
-            if not (tiles_dir / f"{idx}.png.tiles" / "tiles.json").exists()
+            (idx, d) for idx, d in url_docs if _needs_render(tiles_dir, idx, d)
         ]
         if new_url_docs:
             urls = [d.url for _, d in new_url_docs]
@@ -138,7 +209,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
 
         with tempfile.TemporaryDirectory(prefix="pixelrag_text_") as tmp_dir:
             for idx, doc in text_docs:
-                if (tiles_dir / f"{idx}.png.tiles" / "tiles.json").exists():
+                if not _needs_render(tiles_dir, idx, doc):
                     continue
                 src_path = Path(doc.path)
                 content = src_path.read_text(errors="replace")
@@ -167,14 +238,93 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
                 )
         logger.info("  Rendered %d text files (.md/.txt)", len(text_docs))
 
-    # Render PDFs
+    # Render PDFs — use idx as tile directory name (like URLs) so directory
+    # names are always the numeric article_id.
     for idx, doc in pdf_docs:
+        if not _needs_render(tiles_dir, idx, doc):
+            continue  # already rendered for this same document
         try:
-            render_pdf(doc.path, str(tiles_dir))
+            render_pdf(doc.path, str(tiles_dir), stem=str(idx))
         except Exception as e:
             logger.warning("  FAILED PDF %s: %s", doc.id, e)
     if pdf_docs:
         logger.info("  Rendered %d PDFs", len(pdf_docs))
+
+    # Render local images (PNG/JPG) — copy/resize into the tile directory structure
+    if image_docs:
+        from PIL import Image as PILImage
+
+        _MAX_WIDTH = 4000  # cap large images to avoid VRAM pressure during embedding
+
+        for idx, doc in image_docs:
+            if not _needs_render(tiles_dir, idx, doc):
+                continue
+            tile_dir = tiles_dir / f"{idx}.png.tiles"
+            tile_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                img = PILImage.open(doc.path)
+                # JPEG has no alpha: composite transparent images onto white
+                # before dropping the channel. A bare convert("RGB") maps
+                # fully-transparent pixels to their underlying RGB — black for
+                # typical chart/logo exports — turning them into dark garbage.
+                if img.mode in ("RGBA", "LA", "PA") or (
+                    img.mode == "P" and "transparency" in img.info
+                ):
+                    rgba = img.convert("RGBA")
+                    background = PILImage.new("RGB", rgba.size, "white")
+                    background.paste(rgba, mask=rgba.getchannel("A"))
+                    img = background
+                else:
+                    img = img.convert("RGB")
+                # Resize if too wide
+                if img.width > _MAX_WIDTH:
+                    ratio = _MAX_WIDTH / img.width
+                    img = img.resize(
+                        (int(img.width * ratio), int(img.height * ratio)),
+                        PILImage.LANCZOS,
+                    )
+                tile_path = tile_dir / "tile_0000.jpg"
+                img.save(tile_path, "JPEG", quality=90)
+                manifest = {
+                    "url": doc.path,
+                    "page_height": img.height,
+                    "tiles": ["tile_0000.jpg"],
+                    "complete": True,
+                }
+                with open(tile_dir / "tiles.json", "w") as f:
+                    json.dump(manifest, f)
+            except Exception as e:
+                logger.warning("  FAILED image %s: %s", doc.id, e)
+        logger.info("  Rendered %d local images", len(image_docs))
+
+    # Write article_id and the source identity into each tile directory's
+    # manifests, so the embed pipeline reads the id explicitly instead of
+    # guessing from the directory name, and so the next run's _needs_render
+    # can detect stale directories after the source set changes. tiles.json
+    # always exists here; chunks.json exists only for PDFs (pdf.py writes it
+    # at render time, and chunk.py then skips those dirs). For every other
+    # source chunks.json is created by Stage 2's chunk.py, which propagates
+    # article_id from tiles.json. So write whichever exist now.
+    for idx, doc in url_docs + text_docs + pdf_docs + image_docs:
+        identity = doc.url or doc.path
+        for manifest_name in ("tiles.json", "chunks.json"):
+            manifest_path = tiles_dir / f"{idx}.png.tiles" / manifest_name
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                logger.warning("  Could not stamp unreadable %s", manifest_path)
+                continue
+            if manifest.get("article_id") == idx and manifest.get("source") == identity:
+                continue  # already stamped — skip the rewrite
+            manifest["article_id"] = idx
+            manifest["source"] = identity
+            # Atomic replace: a crash mid-write must not truncate the manifest
+            # (a corrupt tiles.json would otherwise poison every later stage).
+            tmp_path = manifest_path.with_name(manifest_name + ".tmp")
+            tmp_path.write_text(json.dumps(manifest))
+            os.replace(tmp_path, manifest_path)
 
     # Save articles.json for serve API — title + URL per article.
     # Use the pipeline's sequential *position index* (0, 1, 2, …) rather than
@@ -182,6 +332,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     # as doc IDs, which are not numeric. int() on a filename stem raises ValueError
     # and crashes the entire index build step.
     articles_path = output / "articles.json"
+    source_root = str(config.get("source", {}).get("path", "") or "")
     article_entries = []
     for enum_idx, a in enumerate(articles):
         title = a.get("metadata", {}).get("title", "")
@@ -191,7 +342,11 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             # Fall back to original doc id (e.g. filename stem) as display title
             title = a.get("id", str(enum_idx))
         url = a.get("url", "") or a.get("path", "")
-        article_entries.append({"title": title, "url": url})
+        # Department (from the directory layout of local sources) enables
+        # server-side filtered search; empty string means "no department".
+        article_entries.append(
+            {"title": title, "url": url, "department": _department_of(a, source_root)}
+        )
     with open(articles_path, "w") as f:
         json.dump(article_entries, f)
     logger.info(
@@ -314,7 +469,10 @@ def main():
     )
     parser.add_argument("--output", "-o", default=None, help="Output directory")
     parser.add_argument(
-        "--device", default=None, choices=["cpu", "cuda"], help="Embedding device"
+        "--device",
+        default=None,
+        choices=["auto", "cpu", "mps", "cuda"],
+        help="Embedding device (default: from config; auto-detects cuda/mps/cpu)",
     )
     parser.add_argument(
         "--limit", "-n", type=int, default=None, help="Max documents to process"

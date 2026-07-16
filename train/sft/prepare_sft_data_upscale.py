@@ -14,9 +14,15 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TypedDict
 
 from PIL import Image
 from tqdm import tqdm
+
+
+class ImageInfo(TypedDict):
+    src: str
+    dst: str
 
 
 def compress_then_upscale(src: str, dst: str, scale_factor: float) -> bool:
@@ -39,7 +45,7 @@ def compress_then_upscale(src: str, dst: str, scale_factor: float) -> bool:
         return False
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-dir", required=True)
     parser.add_argument("--output-dir", required=True)
@@ -80,7 +86,7 @@ def main():
             examples = examples[: args.max_examples]
         print(f"  Loaded {len(examples)} examples")
 
-        unique_images = {}
+        unique_images: dict[str, ImageInfo] = {}
         for ex in examples:
             src_rel = ex["chunk_path"]
             src_abs = str(dataset_dir / src_rel)

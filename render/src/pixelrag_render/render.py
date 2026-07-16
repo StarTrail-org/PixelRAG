@@ -115,6 +115,7 @@ def render_pdf(
     dpi: int = 200,
     pages: Optional[list[int]] = None,
     quality: int = 85,
+    stem: str | None = None,
 ) -> list[Path]:
     """Render a PDF file to tiled JPEG images.
 
@@ -124,13 +125,16 @@ def render_pdf(
         dpi: Rendering resolution (default 200 ≈ 1650×2200 for A4).
         pages: 1-based list of page numbers to render. ``None`` renders all.
         quality: JPEG quality 1-100 (default 85).
+        stem: Override for the tile directory name (default: PDF filename stem).
 
     Returns:
         List containing the tile directory Path on success.
     """
     from .backends.pdf import render_pdf as _render_pdf
 
-    return _render_pdf(path, output_dir, dpi=dpi, pages=pages, quality=quality)
+    return _render_pdf(
+        path, output_dir, dpi=dpi, pages=pages, quality=quality, stem=stem
+    )
 
 
 def render_file(
@@ -280,10 +284,12 @@ def main() -> None:
     parser.add_argument(
         "--wait-network-idle",
         action="store_true",
-        help="After the page's load event, also wait until the network is quiet "
-        "(~500ms) before capturing. Helps JS/SPA pages that fetch content after "
-        "load; adds a quiet window per page, so off by default. Recommended for "
-        "single-page renders (e.g. the pixelbrowse skill).",
+        help="After the page's load event, also wait until at most 2 network "
+        "requests have been in flight for ~500ms (networkidle2) before "
+        "capturing, capped at 12s. Helps JS/SPA pages that fetch content "
+        "after load; tolerates persistent analytics/long-poll connections. "
+        "Off by default; the index pipeline's `web` source and the "
+        "pixelbrowse skill enable it.",
     )
     parser.add_argument(
         "--dpi",

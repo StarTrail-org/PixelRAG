@@ -286,9 +286,7 @@ def build_qdrant(
         client_options["url"] = url
     if api_key:
         client_options["api_key"] = api_key
-    if not any(
-        key in client_options for key in ("url", "host", "location", "path")
-    ):
+    if not any(key in client_options for key in ("url", "host", "location", "path")):
         raise SystemExit(
             "Qdrant requires --qdrant-url or an endpoint in --qdrant-client-config"
         )
@@ -454,9 +452,7 @@ def main():
     p_build.add_argument(
         "--qdrant-url", default=None, help="Qdrant server/Cloud URL (qdrant backend)"
     )
-    p_build.add_argument(
-        "--qdrant-api-key", default=os.environ.get("QDRANT_API_KEY")
-    )
+    p_build.add_argument("--qdrant-api-key", default=os.environ.get("QDRANT_API_KEY"))
     p_build.add_argument(
         "--qdrant-client-config",
         help="Path to a JSON object of QdrantClient constructor arguments",

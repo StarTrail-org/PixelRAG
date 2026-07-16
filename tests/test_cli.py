@@ -32,6 +32,14 @@ def test_pixelrag_umbrella_help():
         assert stage in out
 
 
+def test_index_build_device_choices():
+    # CLI must offer every device the embedder supports (auto/mps were missing).
+    # Assert the argparse-rendered choices token, not loose words in the help prose.
+    r = _run("pixelrag", "index", "build", "--help")
+    assert r.returncode == 0
+    assert "{auto,cpu,mps,cuda}" in r.stdout
+
+
 def test_pixelrag_unknown_stage_errors():
     r = _run("pixelrag", "definitely-not-a-stage")
     assert r.returncode != 0

@@ -32,6 +32,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import base64
 import contextvars
 import functools
@@ -146,6 +147,11 @@ class SearchRequest(BaseModel):
     instruction: str | None = None  # override query embedding instruction
     include_images: bool = False  # return base64-encoded tile images
     articles_only: bool = False  # drop Wikipedia meta pages (Portal:, List_of_, …)
+    # Restrict search to one department (articles.json "department" field, set by
+    # `pixelrag index build` from the source directory layout). Pre-filters inside
+    # FAISS via an IDSelector — not a post-filter, so n_docs results are guaranteed
+    # when the department has enough tiles.
+    department: str | None = None
 
 
 # Wikipedia meta/aggregator pages that pollute "find the article" results.
@@ -162,6 +168,30 @@ _META_RE = re.compile(
 
 def _is_meta(url: str) -> bool:
     return bool(_META_RE.search(url))
+
+
+def _department_article_ids(department: str) -> np.ndarray:
+    """Article ids belonging to a department (articles.json "department" field).
+
+    Backend-agnostic: the ids are handed to VectorBackend.raw_search, which
+    turns them into its native pre-filter (FAISS: IDSelector over vector rows;
+    Qdrant: payload filter on article_id).
+    """
+    dept_to_aids = _state.get("dept_to_aids") or {}
+    if not dept_to_aids:
+        raise HTTPException(
+            status_code=400,
+            detail="Index was built without department metadata; rebuild with "
+            "`pixelrag index build` from a directory-per-department source.",
+        )
+    aids = dept_to_aids.get(department)
+    if aids is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown department {department!r}. "
+            f"Available: {sorted(dept_to_aids)}",
+        )
+    return aids
 
 
 class Hit(BaseModel):
@@ -338,6 +368,12 @@ def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
     if os.path.exists(flat_path):
         return flat_path
 
+    # PDF pipeline stores whole pages as tile_XXXX.jpg (one chunk per page,
+    # no materialized chunk files) — fall back to the page image.
+    page_path = os.path.join(tiles_dir, tiles_dirname, f"tile_{tile_index:04d}.jpg")
+    if os.path.exists(page_path):
+        return page_path
+
     # Sharded layout: tiles_dir/shard_XXX/sub/{article_id}.png.tiles/chunk_XXXX_YY.png
     top_shard = article_id // shard_size
     top_shard_dir = os.path.join(tiles_dir, f"shard_{top_shard:03d}")
@@ -422,9 +458,20 @@ async def search(req: SearchRequest):
         fetch_k = req.n_docs * 5
     else:
         fetch_k = req.n_docs
+    article_filter = None
+    if req.department:
+        # Department pre-filter: the backend scores only that department's
+        # vectors (FAISS: IDSelector; Qdrant: payload filter) — a real
+        # pre-filter, not post-filtering, so n_docs results are guaranteed
+        # when the department has enough tiles.
+        article_filter = _department_article_ids(req.department)
     try:
         raw = backend.raw_search(
-            query_vectors, fetch_k, min_tile_height=req.min_tile_height
+            query_vectors,
+            fetch_k,
+            min_tile_height=req.min_tile_height,
+            article_ids=article_filter,
+            filter_cache_key=f"dept:{req.department}" if req.department else None,
         )
     finally:
         backend.reset_nprobe()
@@ -453,7 +500,10 @@ async def search(req: SearchRequest):
                 with open(tile_path, "rb") as fp:
                     img_b64 = base64.b64encode(fp.read()).decode()
             elif req.include_images and _state.get("ondemand") is not None:
-                img_b64 = _ondemand_chunk_b64(aid, ti, ci, th)
+                # Render off the event loop: _ondemand_chunk_b64 -> render_url uses
+                # asyncio.run(), which raises "cannot be called from a running event
+                # loop" if invoked directly here. Offload to a worker thread.
+                img_b64 = await asyncio.to_thread(_ondemand_chunk_b64, aid, ti, ci, th)
             # Expose a relative tile path, not the absolute server filesystem
             # path (avoids leaking the host's directory layout; clients fetch
             # tiles via /tile/{article_id}/{tile_index}/{chunk_index}).
@@ -515,6 +565,18 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/departments")
+async def departments():
+    """Departments available for the `department` search filter, with doc counts."""
+    dept_to_aids = _state.get("dept_to_aids") or {}
+    return {
+        "departments": [
+            {"name": d, "n_documents": len(aids)}
+            for d, aids in sorted(dept_to_aids.items())
+        ]
+    }
+
+
 class ReconstructRequest(BaseModel):
     vector_ids: list[int | str]
 
@@ -543,7 +605,8 @@ async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
     path = _resolve_path(article_id, tile_index, chunk_index)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Tile not found")
-    return FileResponse(path, media_type="image/png")
+    media_type = "image/jpeg" if path.endswith((".jpg", ".jpeg")) else "image/png"
+    return FileResponse(path, media_type=media_type)
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +621,8 @@ def load(args):
     device = args.device
     dtype = torch.float32 if device == "cpu" else torch.bfloat16
 
+    # Load summary (index loading itself lives in the backend: FaissBackend
+    # honors PIXELRAG_INDEX_MMAP for memory-mapped multi-100G indexes).
     summary_path = os.path.join(args.index_dir, "summary.json")
     summary = {}
     if os.path.exists(summary_path):
@@ -580,6 +645,20 @@ def load(args):
     with open(args.articles_json) as f:
         articles = json.load(f)
     logger.info("Loaded %d article slugs", len(articles))
+
+    # Department → article ids, for the `department` search filter. Older
+    # indexes (or web/kiwix sources) have no "department" key — the map stays
+    # empty and filtered requests get a clear 400.
+    dept_to_aids: dict[str, list[int]] = {}
+    for aid, a in enumerate(articles):
+        dept = a.get("department", "") if isinstance(a, dict) else ""
+        if dept:
+            dept_to_aids.setdefault(dept, []).append(aid)
+    if dept_to_aids:
+        logger.info(
+            "Departments: %s",
+            ", ".join(f"{d}({len(v)})" for d, v in sorted(dept_to_aids.items())),
+        )
 
     # Load embedding model
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
@@ -621,6 +700,7 @@ def load(args):
         {
             "backend": backend,
             "articles": articles,
+            "dept_to_aids": {d: np.asarray(v) for d, v in dept_to_aids.items()},
             "processor": processor,
             "model": model,
             "device": device,
@@ -719,7 +799,9 @@ def main():
         "--qdrant-url", default=None, help="Qdrant server/Cloud URL (qdrant backend)"
     )
     parser.add_argument(
-        "--qdrant-api-key", default=os.environ.get("QDRANT_API_KEY"), help="Qdrant API key"
+        "--qdrant-api-key",
+        default=os.environ.get("QDRANT_API_KEY"),
+        help="Qdrant API key",
     )
     parser.add_argument(
         "--qdrant-client-config",

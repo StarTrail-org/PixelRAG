@@ -1,9 +1,7 @@
 """Self-contained LLM-as-judge grader for the PixelRAG reproduction.
 
-Migrated from the paper's evaluation/worldvqa_eval/worldvqa_eval.py + evaluate.py
-(the encyclopedic_vqa / mmsearch / worldvqa path) so the eval pipeline does not
-depend on the old dr-agent (Vis-RAG) repo. Behaviour is byte-faithful to the
-paper grader:
+Implements the paper's evaluation path (encyclopedic_vqa / mmsearch / worldvqa) as a
+standalone module. Behaviour is faithful to the paper grader:
 
 - Judge prompt = JUDGE_WORLDQA_PROMPT_EN (verbatim from MoonshotAI/WorldVQA),
   loaded from eval/repro_assets/judge_worldvqa_prompt.txt.
@@ -65,6 +63,10 @@ def strip_think(text: str) -> str:
 
 def build_ground_truth(task: str, original_data: dict) -> str:
     """Match evaluate.py convert_to_evaluate_format."""
+    if task in EXACT_MATCH_TASKS:
+        # nq / nq_tables / triviaqa carry a list of acceptable gold spans/aliases.
+        golds = [str(g) for g in (_golds_for(task, original_data) or []) if g]
+        return "Any of: " + " | ".join(golds) if golds else ""
     if task == "encyclopedic_vqa":
         refs = original_data.get("reference_list") or []
         if refs:
@@ -112,6 +114,7 @@ def _golds_for(task: str, od: dict):
     if task in EXACT_MATCH_TASKS:
         g = (
             od.get("answers")
+            or od.get("gold_answers")
             or od.get("reference_list")
             or od.get("answer")
             or od.get("gt_answer")
@@ -145,8 +148,11 @@ async def grade_file(
     path: str,
     grader_model: str = DEFAULT_GRADER_MODEL,
     concurrency: int = 16,
+    llm_judge: bool = False,
 ) -> dict:
-    if task in EXACT_MATCH_TASKS:
+    # nq/nq_tables/triviaqa default to strict exact-match (no API key needed). The paper's
+    # published numbers for these used the LLM judge (semantic match) — pass --llm-judge.
+    if task in EXACT_MATCH_TASKS and not llm_judge:
         return grade_exact_match(path)
     from openai import AsyncOpenAI
 
@@ -223,12 +229,26 @@ def main():
     ap.add_argument("jsonl", help="responses jsonl from run_bench.py")
     ap.add_argument("--grader-model", default=DEFAULT_GRADER_MODEL)
     ap.add_argument("--concurrency", type=int, default=16)
+    ap.add_argument(
+        "--llm-judge",
+        action="store_true",
+        help="For nq/nq_tables/triviaqa: grade with the gpt-4.1 LLM judge (semantic "
+        "match — what the paper used for its published numbers) instead of strict "
+        "exact-match. Requires OPENAI_API_KEY.",
+    )
     args = ap.parse_args()
     res = asyncio.run(
-        grade_file(args.task, args.jsonl, args.grader_model, args.concurrency)
+        grade_file(
+            args.task, args.jsonl, args.grader_model, args.concurrency, args.llm_judge
+        )
+    )
+    mode = (
+        "LLM-judge"
+        if args.task in EXACT_MATCH_TASKS and args.llm_judge
+        else ("exact-match" if args.task in EXACT_MATCH_TASKS else "LLM-judge")
     )
     print(
-        f"{Path(res['file']).name}: {res['correct']}/{res['n']} = {res['score']:.4f} "
+        f"{Path(res['file']).name} [{mode}]: {res['correct']}/{res['n']} = {res['score']:.4f} "
         f"(C={res['correct']} I={res['incorrect']} U={res['unattempted']} err={res['errors']})"
     )
     print(f"Score: {res['score']:.3f}")
