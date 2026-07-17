@@ -668,7 +668,7 @@ def load(args):
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.model,
         trust_remote_code=True,
-        dtype=dtype,
+        torch_dtype=dtype,
     )
     adapter_path = getattr(args, "peft_adapter", None)
     if adapter_path:

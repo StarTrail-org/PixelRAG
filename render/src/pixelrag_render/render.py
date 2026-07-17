@@ -252,7 +252,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=["cdp", "playwright"],
+        choices=["cdp"],
         default="cdp",
         help="Browser backend for URL/HTML rendering (default: cdp).",
     )

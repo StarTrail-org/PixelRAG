@@ -738,7 +738,7 @@ def main():
         "--validate-max-fail-pct",
         type=float,
         default=5.0,
-        help="Exit(1) if Gemini fail percentage exceeds this (default: 10.0)",
+        help="Exit(1) if Gemini fail percentage exceeds this (default: 5.0)",
     )
     parser.add_argument(
         "--validate-interval",
