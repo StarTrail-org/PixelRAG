@@ -12,13 +12,13 @@ import os
 
 # Try to import Google GenAI for Gemini support
 try:
-    import google.genai as genai
+    from google import genai
     from google.genai.types import (
-        GenerateContentConfig,
-        Part,
         Blob,
-        HttpOptions,
         Content,
+        GenerateContentConfig,
+        HttpOptions,
+        Part,
     )
 
     GEMINI_AVAILABLE = True

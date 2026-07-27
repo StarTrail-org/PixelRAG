@@ -23,11 +23,11 @@ def setup_driver(window_width=1024, window_height=2000, device_scale_factor=1):
         window_height: Initial viewport height.
         device_scale_factor: Pixel density (1 = standard, 2 = retina quality).
     """
+    import shutil
+
     from selenium import webdriver
     from selenium.webdriver.chrome.service import Service
     from webdriver_manager.chrome import ChromeDriverManager
-
-    import shutil
 
     snap_chromedriver = "/snap/bin/chromium.chromedriver"
     if os.path.exists(snap_chromedriver):
@@ -80,10 +80,11 @@ def _capture_with_scroll(driver, output_path, scroll_pause=0.8, max_scrolls=100)
     Works for PDF viewers, infinite scroll pages, and other dynamic content.
     Uses image comparison to detect when scrolling has stopped.
     """
+    import hashlib
+    import tempfile
+
     from selenium.webdriver.common.action_chains import ActionChains
     from selenium.webdriver.common.keys import Keys
-    import tempfile
-    import hashlib
 
     def get_screenshot_hash(path):
         """Get hash of screenshot to detect changes."""

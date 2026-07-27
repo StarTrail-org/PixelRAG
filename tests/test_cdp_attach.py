@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from pixelrag_render.backends import cdp
 
 _BIN = Path(sys.executable).parent

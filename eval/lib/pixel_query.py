@@ -12,6 +12,7 @@ Usage:
 import logging
 import os
 from pathlib import Path
+
 from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
@@ -352,7 +353,6 @@ class QueryImageTextRenderer:
                 outline=0,
             )
             # For simple output we keep the card as-is; full rounded crop would need alpha
-            pass
 
         card.save(out_path)
         logger.debug(f"Rendered query card: {out_path} ({card.size[0]}x{card.size[1]})")

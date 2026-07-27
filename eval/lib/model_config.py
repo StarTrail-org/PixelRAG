@@ -6,7 +6,6 @@ This module provides model configurations to keep run_naive_simpleqa.py clean.
 import os
 from typing import Dict, Optional
 
-
 MINIMAX_MODELS = {
     "minimax-m3": "MiniMax-M3",
     "minimax-m2.7": "MiniMax-M2.7",
