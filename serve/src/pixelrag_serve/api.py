@@ -102,12 +102,13 @@ def _init_query_log():
     _query_log_path = log_dir / "queries.jsonl"
 
 
-def _log_query(req: "SearchRequest", request_id: str):
+def _log_query(req: "SearchRequest", request_id: str, source: str | None = None):
     if _query_log_path is None:
         return
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "request_id": request_id,
+        "source": source,
         "queries": [q.text for q in req.queries],
         "has_image": [q.image is not None for q in req.queries],
         "n_docs": req.n_docs,
@@ -461,7 +462,7 @@ def _resolve_url(article_id: int) -> str:
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search(req: SearchRequest):
+async def search(req: SearchRequest, request: Request):
     t0 = time.time()
 
     # Encode queries
@@ -570,7 +571,7 @@ async def search(req: SearchRequest):
         time.time() - t0,
     )
 
-    _log_query(req, _request_id_ctx.get())
+    _log_query(req, _request_id_ctx.get(), request.headers.get("X-Source"))
 
     return SearchResponse(results=results)
 

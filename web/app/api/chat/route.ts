@@ -99,7 +99,7 @@ function createTools(
 
       const resp = await fetch(`${SEARCH_URL}/search`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Source": "chat" },
         body: JSON.stringify({
           queries: [queryObj],
           n_docs: args.n_results ?? 5,
