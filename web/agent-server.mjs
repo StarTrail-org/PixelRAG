@@ -98,7 +98,7 @@ function createTools(onEvent, uploadedImage) {
       onEvent("searching", { query: label })
       const resp = await fetch(`${SEARCH_URL}/search`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Source": "chat" },
         body: JSON.stringify({ queries: [queryObj], n_docs: args.n_results ?? 5, articles_only: true }),
         signal: AbortSignal.timeout(30000),
       })
