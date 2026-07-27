@@ -46,3 +46,4 @@ node_modules/
 # local scratch / test artifacts (never commit)
 tmp/
 demos/demo_tiles/
+assets/*.mp4
