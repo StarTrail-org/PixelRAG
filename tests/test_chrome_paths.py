@@ -1,6 +1,7 @@
 """Cross-platform Chrome resolution candidates (logic is testable on any OS)."""
 
 import os
+
 from pixelrag_render.chrome import _candidate_chrome_paths, find_chrome
 
 

@@ -17,7 +17,7 @@ import pytest
 
 faiss = pytest.importorskip("faiss", reason="serve extra not installed")
 
-from pixelrag_serve.backends import FaissBackend  # noqa: E402
+from pixelrag_serve.backends import FaissBackend
 
 DIM = 8
 N_VECTORS = 12
@@ -62,9 +62,8 @@ def faiss_backend(tmp_path_factory):
 @pytest.fixture(scope="module")
 def qdrant_backend():
     pytest.importorskip("qdrant_client", reason="qdrant extra not installed")
-    from qdrant_client import QdrantClient, models
-
     from pixelrag_serve.backends import QdrantBackend
+    from qdrant_client import QdrantClient, models
 
     client = QdrantClient(":memory:")
     client.create_collection(

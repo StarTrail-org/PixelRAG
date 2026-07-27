@@ -110,9 +110,10 @@ def test_build_index_help_lists_qdrant_collection_modes():
 
 def test_light_imports():
     # Core install must import without torch.
-    import pixelrag  # noqa: F401
     import pixelrag_render  # noqa: F401
     from pixelrag_render import render_file, render_url  # noqa: F401
+
+    import pixelrag  # noqa: F401
 
 
 def test_dispatcher_stage_table():

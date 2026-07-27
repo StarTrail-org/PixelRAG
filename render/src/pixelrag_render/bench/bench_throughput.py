@@ -34,10 +34,9 @@ from PIL import Image
 
 from pixelrag_render.strategies.base import TileCapture
 from pixelrag_render.strategies.cdp_sequential import (
-    CDPSequentialStrategy,
     VIEWPORT_WIDTH,
+    CDPSequentialStrategy,
 )
-
 
 CORRECT_THRESHOLD = 99.0
 JPEG_MAX_MEAN_DIFF = 5.0
@@ -59,8 +58,9 @@ def prepare_articles(
     - "http://host:port": single kiwix-serve instance
     - "http://host:9461,http://host:9462,...": multiple instances (round-robin)
     """
-    from libzim.reader import Archive
     from urllib.parse import quote
+
+    from libzim.reader import Archive
 
     archive = Archive(zim_path)
 

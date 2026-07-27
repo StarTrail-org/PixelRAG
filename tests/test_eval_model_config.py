@@ -3,7 +3,6 @@ from runpy import run_path
 
 import pytest
 
-
 get_model_config = run_path(
     str(Path(__file__).parents[1] / "eval" / "lib" / "model_config.py")
 )["get_model_config"]

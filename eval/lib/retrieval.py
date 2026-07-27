@@ -7,9 +7,9 @@ This module defines retrieval strategies that work with prepared data:
 - VectorRetriever: Search across all screenshots using vector similarity
 """
 
+import asyncio
 import base64
 import io
-import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -711,8 +711,10 @@ class JinaReaderRetriever(BaseRetriever):
             logger.warning(f"Failed to save to cache: {e}")
 
     async def retrieve(self, query: str, example: dict) -> RetrievalResult:
-        import aiohttp
         import asyncio
+
+        import aiohttp
+
         from .simpleqa_data import extract_url_from_metadata
 
         # Check cache first
@@ -917,6 +919,7 @@ class WikipediaAPIRetriever(BaseRetriever):
     def _html_to_text(self, html: str) -> str:
         """Convert Wikipedia HTML to plain text, preserving table content."""
         import re
+
         from bs4 import BeautifulSoup
 
         soup = BeautifulSoup(html, "html.parser")
@@ -1005,6 +1008,7 @@ class WikipediaAPIRetriever(BaseRetriever):
 
     async def retrieve(self, query: str, example: dict) -> RetrievalResult:
         import aiohttp
+
         from .simpleqa_data import extract_url_from_metadata
 
         # Check cache first
@@ -1428,8 +1432,9 @@ class TiledVectorRetriever(BaseRetriever):
 
     def _prepare_screenshots_and_tiles(self) -> list[str]:
         """Prepare screenshots and tiles for dataset, return tile paths."""
-        from .simpleqa_data import capture_screenshot_for_example, split_image_to_tiles
         from tqdm import tqdm
+
+        from .simpleqa_data import capture_screenshot_for_example, split_image_to_tiles
 
         screenshot_paths = []
         missing = []
@@ -1485,8 +1490,7 @@ class TiledVectorRetriever(BaseRetriever):
             if "_tile_" in filename:
                 example_id = filename.split("_tile_")[0]
                 # Remove _fullhd suffix if present
-                if example_id.endswith("_fullhd"):
-                    example_id = example_id[:-7]
+                example_id = example_id.removesuffix("_fullhd")
                 if example_id in self.id_to_url:
                     url = self.id_to_url[example_id]
                     if url not in seen:
@@ -1591,8 +1595,9 @@ class TiledColQwenVectorRetriever(BaseRetriever):
 
     def _prepare_screenshots_and_tiles(self) -> list[str]:
         """Prepare screenshots and tiles for dataset, return tile paths."""
-        from .simpleqa_data import capture_screenshot_for_example, split_image_to_tiles
         from tqdm import tqdm
+
+        from .simpleqa_data import capture_screenshot_for_example, split_image_to_tiles
 
         screenshot_paths = []
         missing = []
@@ -1646,8 +1651,7 @@ class TiledColQwenVectorRetriever(BaseRetriever):
             filename = os.path.basename(path)
             if "_tile_" in filename:
                 example_id = filename.split("_tile_")[0]
-                if example_id.endswith("_fullhd"):
-                    example_id = example_id[:-7]
+                example_id = example_id.removesuffix("_fullhd")
                 if example_id in self.id_to_url:
                     url = self.id_to_url[example_id]
                     if url not in seen:
@@ -1902,8 +1906,9 @@ class DsServeRetriever(BaseRetriever):
         self.top_k = top_k
 
     async def retrieve(self, query: str, example: dict) -> RetrievalResult:
-        import aiohttp
         import asyncio
+
+        import aiohttp
 
         max_retries = 3
         for attempt in range(max_retries):
@@ -2585,8 +2590,9 @@ class TiledQwen3VLEmbeddingRetriever(BaseRetriever):
         Uses deduplicated examples (one per unique URL) to avoid
         duplicate tiles inflating the retrieval index.
         """
-        from .simpleqa_data import capture_screenshot_for_example, split_image_to_tiles
         from tqdm import tqdm
+
+        from .simpleqa_data import capture_screenshot_for_example, split_image_to_tiles
 
         examples_to_process = self._dedup_examples
         screenshot_paths = []
@@ -2642,8 +2648,7 @@ class TiledQwen3VLEmbeddingRetriever(BaseRetriever):
             filename = os.path.basename(path)
             if "_tile_" in filename:
                 example_id = filename.split("_tile_")[0]
-                if example_id.endswith("_fullhd"):
-                    example_id = example_id[:-7]
+                example_id = example_id.removesuffix("_fullhd")
                 if example_id in self.id_to_url:
                     url = self.id_to_url[example_id]
                     if url not in seen:
@@ -3110,8 +3115,9 @@ class OCRWrappedRetriever(BaseRetriever):
     async def _ocr_one(self, path: str, session) -> str:
         if path in self._cache:
             return self._cache[path]
-        import aiohttp
         import base64
+
+        import aiohttp
 
         try:
             with open(path, "rb") as f:
@@ -3456,8 +3462,9 @@ class HTMLDOMLookupRetriever(BaseRetriever):
         if article_id >= len(self._articles):
             return None
 
-        import requests
         from urllib.parse import quote
+
+        import requests
 
         slug = self._articles[article_id]
         url = f"{self.KIWIX_BASE}/{quote(slug, safe='/:@!$&()*+,;=')}"
@@ -3495,7 +3502,8 @@ class HTMLDOMLookupRetriever(BaseRetriever):
            (inclusive), plus everything in between — this preserves the full
            contiguous region the chunk spans.
         """
-        from lxml import html as lxml_html, etree
+        from lxml import etree
+        from lxml import html as lxml_html
 
         tree = lxml_html.fromstring(html)
 

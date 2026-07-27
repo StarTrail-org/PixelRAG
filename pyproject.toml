@@ -114,12 +114,47 @@ url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
 [tool.ruff]
-exclude = ["tmp"]
+exclude = ["tmp", "train", "demos", "docs", "skill"]
 
 [tool.ruff.lint]
 ignore = [
-    "E402",  # module-level import not at top — common in ML codebases
-    "E741",  # ambiguous variable name (l, O, I)
+    "E402",      # module-level import not at top — common in ML codebases
+    "E741",      # ambiguous variable name (l, O, I)
+    "BLE001",    # blind exception catch — pervasive in data pipelines
+    "EXE001",    # shebang without +x
+    "S110",      # try-except-pass
+    "S112",      # try-except-continue
+    "SIM102",    # collapsible if
+    "SIM103",    # return bool directly
+    "SIM113",    # enumerate instead of manual counter
+    "SIM115",    # use context manager for open
+    "SIM117",    # combine with-statements
+    "ASYNC210",  # blocking call in async
+    "ASYNC220",  # blocking call in async
+    "ASYNC230",  # blocking call in async
+    "UP006",     # deprecated typing aliases
+    "UP017",     # deprecated datetime aliases
+    "UP035",     # deprecated typing imports
+    "UP041",     # timeout-error alias
+    "UP045",     # X | None instead of Optional
+    "PLW1509",   # subprocess preexec_fn
+    "PLW1510",   # subprocess without check
+    "PLR0402",   # import-as-module-alias
+    "PLR1730",   # if-stmt-min-max
+    "RUF012",    # mutable-class-default
+    "RUF013",    # implicit-optional
+    "RUF022",    # unsorted-all
+    "RUF059",    # unused-unpacked-variable
+    "TRY002",    # raise-vanilla-class
+    "PIE790",    # unnecessary-placeholder
+    "PIE810",    # multiple-starts-ends-with
+    "PYI034",    # non-self-return-type
+    "PERF102",   # incorrect-dict-iterator
+    "PERF101",   # unnecessary-cast-to-int
+    "DTZ005",    # call-datetime-now-without-tzinfo
+    "C401",      # unnecessary-generator-set
+    "C408",      # unnecessary-collection-call
+    "FURB188",   # slice-to-remove-prefix-or-suffix
 ]
 
 [tool.pyright]

@@ -9,7 +9,6 @@ height-strip layout unchanged so existing indexes stay reproducible.
 import json
 
 from PIL import Image
-
 from pixelrag_embed.chunk import CHUNK_HEIGHT, chunk_article
 
 

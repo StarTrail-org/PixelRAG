@@ -24,8 +24,8 @@ import base64
 import io
 import json
 import logging
-import shutil
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -960,7 +960,7 @@ def render_urls(
         def _navtarget(u: str) -> str:
             if u.startswith("http"):
                 return u
-            return u[len("file://") :] if u.startswith("file://") else u
+            return u.removeprefix("file://")
 
         articles = [
             {"path": f"{stem}.png", "file": _navtarget(url)}

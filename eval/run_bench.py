@@ -38,39 +38,42 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from lib import (
+    LLMClient,
+    build_messages,
+    build_react_messages,
+    encode_screenshot,
+    extract_url_from_metadata,
+    load_arc_data,
+    load_commonsenseqa_data,
+    load_hellaswag_data,
+    load_nq_data,
+    load_nq_tables_data,
+    load_openbookqa_data,
+    load_piqa_data,
     # Data
     load_simpleqa_wikipedia,
-    extract_url_from_metadata,
-    encode_screenshot,
-    make_compressed_encoder,
-    load_nq_data,
     load_triviaqa_data,
-    load_nq_tables_data,
-    load_piqa_data,
-    load_hellaswag_data,
-    load_commonsenseqa_data,
-    load_openbookqa_data,
-    load_arc_data,
+    make_compressed_encoder,
 )
-from lib import LLMClient, build_messages, build_react_messages
-from lib.model_config import get_model_config, get_output_filename
-from lib.retrieval import (
-    _get_query_image_path_for_example,
-    _save_worldvqa_query_image,
-    _save_task_query_image,
+from lib.benchmarks import (
+    SUPPORTED_TASKS as DATASET_REPOS,
 )
 from lib.benchmarks import (
     load_encyclopedic_vqa_data,
-    load_shortformqa_data,
-    load_worldvqa_data,
-    load_simplevqa_data,
     load_factualvqa_data,
     load_mmsearch_data,
-    load_webqa_data,
     load_multimodalqa_data,
-    SUPPORTED_TASKS as DATASET_REPOS,
+    load_shortformqa_data,
+    load_simplevqa_data,
+    load_webqa_data,
+    load_worldvqa_data,
 )
-
+from lib.model_config import get_model_config, get_output_filename
+from lib.retrieval import (
+    _get_query_image_path_for_example,
+    _save_task_query_image,
+    _save_worldvqa_query_image,
+)
 
 _DEFAULT_SPLIT_FOR_TASK = {
     "simpleqa": "test",
@@ -106,13 +109,12 @@ def _fetch_status(api_url: str | None, timeout: float = 5.0) -> dict | None:
     import urllib.request
 
     base = api_url.rstrip("/")
-    if base.endswith("/search"):
-        base = base[: -len("/search")]
+    base = base.removesuffix("/search")
     status_url = base + "/status"
     try:
         with urllib.request.urlopen(status_url, timeout=timeout) as r:
             return json.loads(r.read().decode())
-    except Exception as e:  # noqa: BLE001 — best-effort capture
+    except Exception as e:
         return {"_error": f"{type(e).__name__}: {e}", "url": status_url}
 
 
@@ -168,7 +170,7 @@ def _build_run_metadata(args, n_loaded: int) -> dict:
             .decode()
             .strip()
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         meta["git_commit"] = None
     return meta
 
