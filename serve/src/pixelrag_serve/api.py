@@ -41,9 +41,11 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
@@ -88,6 +90,34 @@ logging.basicConfig(
 )
 for handler in logging.getLogger().handlers:
     handler.addFilter(_RequestIDFilter())
+
+_query_log_lock = threading.Lock()
+_query_log_path: Path | None = None
+
+
+def _init_query_log():
+    global _query_log_path
+    log_dir = Path(os.environ.get("PIXELRAG_QUERY_LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _query_log_path = log_dir / "queries.jsonl"
+
+
+def _log_query(req: "SearchRequest", request_id: str):
+    if _query_log_path is None:
+        return
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "queries": [q.text for q in req.queries],
+        "has_image": [q.image is not None for q in req.queries],
+        "n_docs": req.n_docs,
+        "department": req.department,
+    }
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with _query_log_lock:
+        with open(_query_log_path, "a") as f:
+            f.write(line)
+
 
 app = FastAPI(title="PixelRAG Search API")
 
@@ -540,6 +570,8 @@ async def search(req: SearchRequest):
         time.time() - t0,
     )
 
+    _log_query(req, _request_id_ctx.get())
+
     return SearchResponse(results=results)
 
 
@@ -616,6 +648,7 @@ async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
 
 def load(args):
     """Load index, metadata, model, and articles.json."""
+    _init_query_log()
     import torch
 
     device = args.device
