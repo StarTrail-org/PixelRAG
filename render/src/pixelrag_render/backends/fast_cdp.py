@@ -34,6 +34,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from .page_metrics import CONTENT_BOTTOM_JS
+
 logger = logging.getLogger("pixelrag_render.backends.fast_cdp")
 
 VIEWPORT_WIDTH = 875
@@ -58,8 +60,12 @@ CHROME_ARGS = [
     "--disable-features=Translate,MediaRouter,OptimizationHints",
 ]
 
-# JS: wait for fonts + eager images, then return scrollHeight
-_WAIT_FONTS_IMGS = """new Promise(resolve => {
+# JS: wait for fonts + eager images, then return the page height to tile
+_WAIT_FONTS_IMGS = (
+    """new Promise(resolve => {
+    """
+    + CONTENT_BOTTOM_JS
+    + """
     const waitEagerImgs = Promise.all(
         Array.from(document.images)
             .filter(i => !i.complete && i.loading !== 'lazy')
@@ -79,12 +85,13 @@ _WAIT_FONTS_IMGS = """new Promise(resolve => {
                 const sh = document.documentElement.scrollHeight;
                 const body = document.body;
                 resolve(body
-                    ? Math.min(sh, Math.max(Math.ceil(body.getBoundingClientRect().bottom), 1))
+                    ? Math.min(sh, Math.max(contentBottom(body), 1))
                     : sh);
             });
         });
     });
 })"""
+)
 
 
 # ---------------------------------------------------------------------------

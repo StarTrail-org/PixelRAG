@@ -35,6 +35,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from .page_metrics import CONTENT_BOTTOM_JS
+
 logger = logging.getLogger("pixelrag_render.backends.cdp")
 
 VIEWPORT_W = 875
@@ -344,6 +346,7 @@ def _readiness_expr() -> str:
     Returns an async-IIFE expression resolving to the page height to tile.
     """
     return f"""(async () => {{
+        {CONTENT_BOTTOM_JS}
         await new Promise(res => {{
             if (document.readyState === 'complete') return res();
             const t = setTimeout(res, {LOAD_TIMEOUT_MS});
@@ -361,8 +364,7 @@ def _readiness_expr() -> str:
         const sh = document.documentElement.scrollHeight;
         const body = document.body;
         if (body) {{
-            const bottom = Math.ceil(body.getBoundingClientRect().bottom);
-            return Math.min(sh, Math.max(bottom, 1));
+            return Math.min(sh, Math.max(contentBottom(body), 1));
         }}
         return sh;
     }})()"""
