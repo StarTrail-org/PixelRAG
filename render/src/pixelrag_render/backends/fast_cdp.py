@@ -99,6 +99,30 @@ _WAIT_FONTS_IMGS = (
 # ---------------------------------------------------------------------------
 
 
+def _raw_scratch_dir() -> Path:
+    """Per-user scratch directory on /dev/shm for Chrome's raw BGRA dumps.
+
+    `/dev/shm` is shared by every user on the box, so a fixed path belongs to
+    whoever ran first: the directory lands at 0775 owned by them, and for every
+    later user `mkdir(exist_ok=True)` still succeeds while Chrome's write into it
+    is denied. That combination is silent — capture reports success, the manifest
+    claims N tiles, and not one image is written. Scoping the path to the current
+    uid keeps users out of each other's way.
+
+    The writability check is here rather than at first write because the failure
+    it catches surfaces inside Chrome, whose stderr this backend discards.
+    """
+    d = Path(f"/dev/shm/pixelrag_render-{os.getuid()}/raw")
+    d.mkdir(parents=True, exist_ok=True)
+    if not os.access(d, os.W_OK):
+        raise RuntimeError(
+            f"{d} is not writable by uid {os.getuid()}. Chrome writes raw tiles "
+            "there; without write access every capture is silently lost. Remove "
+            "the directory and re-run, or set the turbo path aside with turbo=False."
+        )
+    return d
+
+
 def compress_tile(raw_path: str, out_path: str, quality: int = 85) -> None:
     """Read raw BGRA file, compress to JPEG, delete raw file.
 
@@ -285,8 +309,7 @@ async def _run_render(
     jpeg_quality: int,
     n_compressors: int,
 ) -> dict:
-    raw_dir = Path("/dev/shm/pixelrag_render/raw")
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = _raw_scratch_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Semaphore: limit concurrent captures (CPU-bound) to n_workers // 2
@@ -328,12 +351,24 @@ async def _run_render(
             if item is None:
                 break
             async_results.append(pool.apply_async(compress_tile, item))
-        # Wait for all remaining
+        # Wait for all remaining. A compression failure means that tile never
+        # reached disk, so it has to be counted and logged: swallowing it let a
+        # run report "Done: 13 tiles" with an empty output directory.
+        failed = 0
         for ar in async_results:
             try:
                 ar.get(timeout=60)
-            except Exception:
-                pass
+            except Exception as e:
+                failed += 1
+                if failed <= 3:  # one line per failure is enough to diagnose
+                    logger.error("tile compression failed: %s: %s", type(e).__name__, e)
+        if failed:
+            logger.error(
+                "%d/%d tiles failed to compress and were NOT written to disk",
+                failed,
+                len(async_results),
+            )
+            metrics["errors"] += failed
         pool.close()
         pool.join()
         compress_done.set()
