@@ -1,4 +1,4 @@
-"""Local directory source — auto-detect file types."""
+"""Local source — a single file or a directory tree; auto-detect file types."""
 
 from pathlib import Path
 from typing import Iterator
@@ -20,10 +20,13 @@ EXTENSIONS = {
 class LocalSource(Source):
     def __init__(self, path: str, **kwargs):
         self.path = Path(path)
+        # A path pointing straight at a document is a single-item source; rglob
+        # on a file yields nothing, so branch before walking.
+        candidates = (
+            [self.path] if self.path.is_file() else sorted(self.path.rglob("*"))
+        )
         self._files = [
-            f
-            for f in sorted(self.path.rglob("*"))
-            if f.is_file() and f.suffix.lower() in EXTENSIONS
+            f for f in candidates if f.is_file() and f.suffix.lower() in EXTENSIONS
         ]
 
     def __iter__(self) -> Iterator[Document]:
