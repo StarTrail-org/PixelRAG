@@ -99,6 +99,18 @@ _WAIT_FONTS_IMGS = (
 # ---------------------------------------------------------------------------
 
 
+def _pin_to_cores(cores) -> None:
+    """Pool initializer: keep compression workers off the capture cores.
+
+    Module level, not a closure, because the pool is started with "spawn" — the
+    initializer has to survive pickling, which a nested function does not.
+    """
+    try:
+        os.sched_setaffinity(0, cores)
+    except (OSError, AttributeError):
+        pass  # not Linux, or the affinity call is unavailable — harmless
+
+
 def _raw_scratch_dir() -> Path:
     """Per-user scratch directory on /dev/shm for Chrome's raw BGRA dumps.
 
@@ -321,7 +333,7 @@ async def _run_render(
     # The thread runs pool.starmap in batches, fully independent of asyncio.
     import queue as _queue
     import threading
-    from multiprocessing import Pool as MPPool
+    import multiprocessing
 
     metrics = {
         "total_tiles": 0,
@@ -335,15 +347,20 @@ async def _run_render(
     n_cpus = os.cpu_count() or 128
     compress_cores = set(range(max(0, n_cpus - n_compressors), n_cpus))
 
-    def _pool_init():
-        try:
-            os.sched_setaffinity(0, compress_cores)
-        except OSError:
-            pass
-
     def _compressor_thread():
-        pool = MPPool(processes=n_compressors, initializer=_pool_init)
-        # Warm up: ensure all workers are forked and idle before capture starts
+        # "spawn", not the platform default. This pool is created from a thread while
+        # the capture side already runs its own threads, and forking a multi-threaded
+        # process can deadlock the child on a lock that was held at fork time — CPython
+        # warns about exactly this since 3.12. In a single-threaded caller the fork
+        # happens to work, which is why it survived so long; under any threaded host
+        # (a test session that ran async tests first, a web server calling into the
+        # renderer) it hangs with no output and no error.
+        pool = multiprocessing.get_context("spawn").Pool(
+            processes=n_compressors,
+            initializer=_pin_to_cores,
+            initargs=(compress_cores,),
+        )
+        # Warm up: ensure all workers are up and idle before capture starts
         pool.map(int, range(n_compressors))
         async_results = []
         while True:
