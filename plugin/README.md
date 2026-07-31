@@ -25,3 +25,8 @@ Or use the slash command in an interactive session: `/screenshot <url>`.
 The skill lives in `skills/pixelbrowse/SKILL.md`; the command in `commands/screenshot.md`.
 
 No MCP server or backend — the skill just calls `pixelshot` (Playwright/CDP) on your machine.
+
+## opencode
+
+An equivalent opencode plugin (a `screenshot` tool, shipped as the `opencode-pixelbrowse`
+npm package) lives in [`opencode/`](opencode/).
