@@ -331,9 +331,9 @@ async def _run_render(
     # Compression: dedicated thread with its own multiprocessing.Pool.
     # Tiles are pushed to a thread-safe queue from capture workers.
     # The thread runs pool.starmap in batches, fully independent of asyncio.
+    import multiprocessing
     import queue as _queue
     import threading
-    import multiprocessing
 
     metrics = {
         "total_tiles": 0,
