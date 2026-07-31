@@ -307,6 +307,13 @@ def main() -> None:
         "session (cookies/logins) — so authenticated pages work — then closes only "
         "that tab. Needs no local Chrome binary. Env: PIXELSHOT_CDP_URL.",
     )
+    parser.add_argument(
+        "--extract-text",
+        action="store_true",
+        help="Extract page text alongside tiles (hybrid output). Saves a text.md "
+        "file in each tile directory with the page's innerText. Useful for "
+        "reducing LLM token usage on text-heavy pages.",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -346,6 +353,7 @@ def main() -> None:
             viewport_width=args.viewport_width,
             workers=args.workers,
             wait_network_idle=args.wait_network_idle,
+            extract_text=args.extract_text,
             cdp_url=args.cdp_url,
         )
         results.extend(tile_dirs)
