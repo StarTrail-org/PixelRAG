@@ -21,6 +21,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 
+from ..chrome import sandbox_args
 from .base import ArticleCapture, TileCapture, article_url
 from .connection import WebsocketConnection, pick_page_ws_url
 
@@ -61,7 +62,7 @@ async def _launch_two_tabs(chrome_path: str, port: int, headless_shell: bool = F
     if not headless_shell:
         args.append("--headless=new")
     args += [
-        "--no-sandbox",
+        *sandbox_args(),
         "--disable-dev-shm-usage",
         "--enable-gpu-rasterization",
         "--force-gpu-rasterization",
