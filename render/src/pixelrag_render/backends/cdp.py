@@ -35,6 +35,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from ..chrome import sandbox_args
 from .page_metrics import CONTENT_BOTTOM_JS
 
 logger = logging.getLogger("pixelrag_render.backends.cdp")
@@ -57,7 +58,7 @@ _GPU_ARGS = (
 )
 BROWSER_ARGS = [
     "--disable-dev-shm-usage",
-    "--no-sandbox",
+    *sandbox_args(),
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
     "--disable-background-networking",

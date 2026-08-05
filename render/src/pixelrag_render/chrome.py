@@ -14,6 +14,7 @@ Programmatic:
 """
 
 import json
+import logging
 import os
 import platform
 import re
@@ -26,6 +27,9 @@ from pathlib import Path
 
 INSTALL_DIR = Path.home() / ".cache" / "pixelrag" / "chrome"
 VERSION_FILE = "version.json"
+logger = logging.getLogger(__name__)
+
+_SANDBOX_WARNING_EMITTED = False
 
 # Update these when releasing a new build
 CHROME_VERSION = "150.0.7844.0"
@@ -33,6 +37,29 @@ RELEASE_URL_TEMPLATE = (
     "https://github.com/StarTrail-org/PixelRAG/releases/download/"
     "chrome-{version}/headless_shell-linux-x64.tar.zst"
 )
+
+
+def sandbox_args() -> list[str]:
+    """Return Chrome sandbox arguments, adding ``--no-sandbox`` only when needed."""
+
+    global _SANDBOX_WARNING_EMITTED
+
+    args: list[str] = []
+    force_no_sandbox = os.environ.get("PIXELSHOT_NO_SANDBOX") == "1"
+    running_as_root = (
+        platform.system() == "Linux" and hasattr(os, "getuid") and os.getuid() == 0
+    )
+
+    if force_no_sandbox or running_as_root:
+        args.append("--no-sandbox")
+        if running_as_root and not _SANDBOX_WARNING_EMITTED:
+            logger.warning(
+                "Running Chrome as root on Linux; adding --no-sandbox to avoid crashes. "
+                "Set PIXELSHOT_NO_SANDBOX=1 to force this behavior."
+            )
+            _SANDBOX_WARNING_EMITTED = True
+
+    return args
 
 
 def _playwright_revision(path: str) -> int:

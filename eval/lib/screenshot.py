@@ -54,10 +54,13 @@ def setup_driver(window_width=1024, window_height=2000, device_scale_factor=1):
     if chrome_binary:
         options.binary_location = chrome_binary
 
+    from pixelrag_render.chrome import sandbox_args
+
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
     options.add_argument(f"--window-size={window_width},{window_height}")
-    options.add_argument("--no-sandbox")
+    for arg in sandbox_args():
+        options.add_argument(arg)
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-setuid-sandbox")
