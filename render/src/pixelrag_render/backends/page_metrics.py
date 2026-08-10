@@ -1,12 +1,14 @@
-"""Shared in-page measurement JS for the capture backends.
+"""Shared page measurement for the capture backends: the in-page JS, and the
+judgement about whether what it measured can be trusted.
 
 Kept in one place because both backends measure page height the same way and
 must agree: the standard (``cdp``) and turbo (``fast_cdp``) paths each embed
 this snippet, and a divergence between them silently changes how much of a page
-gets captured depending on which Chrome binary is installed.
+gets captured depending on which Chrome binary is installed. The same goes for
+what they then report in ``tiles.json``.
 
-No imports — a plain string constant, so either backend can use it without a
-dependency edge between them.
+No imports — a plain string constant and a pure function, so either backend can
+use them without a dependency edge between them.
 """
 
 # How tall is the document's *content*?
@@ -42,3 +44,37 @@ CONTENT_BOTTOM_JS = """
         return Math.ceil(bottom + offset);
     }
 """
+
+
+def truncation_reason(
+    page_height: int, tile_height: int, *, measured: bool
+) -> str | None:
+    """Why this capture must not be reported as complete — or ``None`` if it may.
+
+    ``tile_height`` is also the emulated viewport height (both backends pass it
+    to ``Emulation.setDeviceMetricsOverride``), which is what makes the two
+    checks below meaningful:
+
+    - The probe returned nothing usable, so the height fell back to the tile
+      height. Whatever the page actually was, one viewport of it was captured.
+    - The probe returned exactly the viewport height. Then it measured the
+      viewport rather than the content, and everything below the fold is
+      missing — the shape every truncation so far has taken (issues #124, #131,
+      #133), independent of which of them caused it.
+
+    The second check costs a false alarm on a page that happens to be exactly
+    ``tile_height`` tall. That is the right trade against the alternative,
+    which is reporting 5% of an article as the whole of it: a capture wrongly
+    flagged is re-run, a truncation never flagged is read and summarised.
+    """
+    if not measured:
+        return (
+            f"the page-height probe returned nothing, so the height fell back "
+            f"to the {tile_height}px tile height"
+        )
+    if page_height == tile_height:
+        return (
+            f"the measured page height ({page_height}px) is exactly the tile "
+            f"height, so the probe tracked the emulated viewport, not the content"
+        )
+    return None

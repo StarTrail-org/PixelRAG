@@ -35,7 +35,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .page_metrics import CONTENT_BOTTOM_JS
+from .page_metrics import CONTENT_BOTTOM_JS, truncation_reason
 
 logger = logging.getLogger("pixelrag_render.backends.cdp")
 
@@ -438,8 +438,13 @@ async def capture_url(
         },
     )
     try:
-        page_height = result["result"]["value"]
-    except (KeyError, TypeError):
+        page_height = int(result["result"]["value"])
+    except (KeyError, TypeError, ValueError):
+        page_height = 0
+    # A zero/negative height is as much a probe failure as a missing one, and
+    # would otherwise tile nothing at all while still claiming success.
+    height_measured = page_height > 0
+    if not height_measured:
         page_height = tile_h
 
     tiles = []
@@ -501,11 +506,24 @@ async def capture_url(
         idx += 1
         y += tile_h
 
+    reason = truncation_reason(page_height, tile_h, measured=height_measured)
+    if reason:
+        logger.warning(
+            "%s: %s — capturing what is on screen and marking the manifest incomplete",
+            url,
+            reason,
+        )
+
     manifest = {
         "url": url,
         "page_height": page_height,
+        # The geometry the capture ran at. Recorded so a consumer reading
+        # tiles.json later can redo the page_height/tile_height comparison
+        # itself instead of being told the tile height out of band.
+        "tile_height": tile_h,
+        "viewport_width": viewport_w,
         "tiles": tiles,
-        "complete": True,
+        "complete": reason is None,
     }
     with open(tile_dir / "tiles.json", "w") as f:
         json.dump(manifest, f)
