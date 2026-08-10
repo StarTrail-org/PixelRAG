@@ -269,6 +269,22 @@ class StatusResponse(BaseModel):
 
 DEFAULT_INSTRUCTION = "Retrieve images or text relevant to the user's query."
 
+_MAX_INSTRUCTION_LEN = 512
+
+
+def _sanitize_instruction(raw: str | None) -> str:
+    """Validate a client-supplied embedding instruction."""
+    if raw is None:
+        return DEFAULT_INSTRUCTION
+    if not isinstance(raw, str):
+        raise HTTPException(status_code=400, detail="instruction must be a string")
+    if len(raw) > _MAX_INSTRUCTION_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"instruction too long (max {_MAX_INSTRUCTION_LEN} chars)",
+        )
+    return raw
+
 
 def _parse_queries(
     queries: list[Query], instruction: str | None = None
@@ -416,6 +432,8 @@ def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
 
     # Fallback: shard path without checking existence (serve may run without tiles)
     top_shard = article_id // shard_size
+    # Never fabricate a path that cannot exist: the "?" placeholder is not a
+    # real directory, and returning it lets callers believe a file exists.
     return os.path.join(
         tiles_dir, f"shard_{top_shard:03d}", "?", tiles_dirname, chunk_name
     )
@@ -474,11 +492,19 @@ async def search(req: SearchRequest, request: Request):
                 status_code=400,
                 detail="Do not mix pre-computed embeddings with text/image queries in one request.",
             )
-        query_vectors = _encode_queries(req.queries, req.instruction)
+        query_vectors = _encode_queries(req.queries, _sanitize_instruction(req.instruction))
     t_encode = time.time() - t0
 
     # Search through the configured backend.
     backend = _state["backend"]
+    if req.nprobe is not None:
+        if req.nprobe < 1:
+            raise HTTPException(status_code=400, detail="nprobe must be >= 1")
+        nlist = getattr(backend, "nlist", 0) or 0
+        if nlist and req.nprobe > nlist:
+            raise HTTPException(
+                status_code=400, detail=f"nprobe must be <= nlist ({nlist})"
+            )
     backend.set_nprobe(req.nprobe)
 
     # Over-fetch when filtering to ensure enough results after filtering.
@@ -624,8 +650,11 @@ async def reconstruct(req: ReconstructRequest):
 async def tile(path: str):
     """Serve a tile image by its local path (legacy, use /tile/{article_id}/{tile_index}/{chunk_index} instead)."""
     tiles_dir = _state.get("tiles_dir", "./tiles")
+    real_tiles = os.path.realpath(tiles_dir)
     resolved = os.path.realpath(path)
-    if not resolved.startswith(os.path.realpath(tiles_dir)):
+    # Containment check on the REAL path: a symlink inside the tiles dir must
+    # not escape to an arbitrary host file.
+    if not (resolved == real_tiles or resolved.startswith(real_tiles + os.sep)):
         raise HTTPException(status_code=403, detail="Path not under tiles directory")
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
@@ -636,6 +665,13 @@ async def tile(path: str):
 async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
     """Serve a tile image by article_id, tile_index, chunk_index."""
     path = _resolve_path(article_id, tile_index, chunk_index)
+    real_tiles = os.path.realpath(_state.get("tiles_dir", "./tiles"))
+    resolved = os.path.realpath(path)
+    # Defense in depth: even though _resolve_path builds paths from integers,
+    # a compromised or symlinked tiles dir must not serve files outside it.
+    if not (resolved == real_tiles or resolved.startswith(real_tiles + os.sep)):
+        raise HTTPException(status_code=403, detail="Path not under tiles directory")
+    path = resolved
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Tile not found")
     media_type = "image/jpeg" if path.endswith((".jpg", ".jpeg")) else "image/png"
