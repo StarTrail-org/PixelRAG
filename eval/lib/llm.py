@@ -469,6 +469,7 @@ class LLMClient:
         max_context_tokens: int | None = None,
         enable_thinking: bool | None = None,
         force_openai_compat: bool = False,
+        use_litellm: bool = False,
     ):
         self.model = model
         self.temperature = temperature
@@ -476,13 +477,30 @@ class LLMClient:
         self.timeout = timeout
         self.max_context_tokens = max_context_tokens
         self.enable_thinking = enable_thinking
+        # Kept for the LiteLLM path (module-level SDK, no persistent client object).
+        self.api_key = api_key
+        self.api_base = api_base
         print(f"context length model: {max_context_tokens}")
+
+        # LiteLLM routes every provider through one SDK call using a
+        # provider-prefixed model string (e.g. "anthropic/claude-3-5-sonnet",
+        # "gemini/gemini-1.5-pro", "bedrock/..."), so it takes precedence over
+        # the Gemini / OpenAI-compatible branches below.
+        self.use_litellm = use_litellm
 
         # Gemini routes to Google GenAI SDK unless forced to OpenAI-compatible
         # (aggregators like OpenRouter / Commonstack expose Gemini via OAI-compat).
-        self.is_gemini = ("gemini" in model.lower()) and not force_openai_compat
+        self.is_gemini = (
+            (not use_litellm)
+            and ("gemini" in model.lower())
+            and not force_openai_compat
+        )
 
-        if self.is_gemini:
+        if self.use_litellm:
+            # No persistent client: litellm.acompletion is a module-level call.
+            self.client = None
+            self.gemini_client = None
+        elif self.is_gemini:
             if not GEMINI_AVAILABLE:
                 raise ImportError(
                     "google-genai package is required for Gemini models. Install with: pip install google-genai"
@@ -552,7 +570,9 @@ class LLMClient:
         timeout_attempts = 0
         while True:
             try:
-                if self.is_gemini:
+                if self.use_litellm:
+                    return await self._generate_litellm(messages)
+                elif self.is_gemini:
                     return await self._generate_gemini(messages)
                 else:
                     return await self._generate_openai(messages)
@@ -728,6 +748,58 @@ class LLMClient:
 
         usage = {}
         if response.usage:
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+
+        return generated_text, usage
+
+    async def _generate_litellm(self, messages: list[dict]) -> tuple[str, dict]:
+        """Generate via the LiteLLM SDK (one call for 100+ providers).
+
+        The model string is provider-prefixed (e.g. "anthropic/claude-3-5-sonnet",
+        "gemini/gemini-1.5-pro", "bedrock/..."). Vision content blocks in
+        ``messages`` are passed through unchanged — LiteLLM maps them to each
+        provider's native format. ``drop_params=True`` drops any param a given
+        provider does not support, so one config works everywhere.
+        """
+        import litellm
+
+        kwargs: dict = dict(
+            model=self.model,
+            messages=messages,
+            max_tokens=self.max_tokens,
+            timeout=self.timeout,
+            drop_params=True,
+        )
+        # Credentials are optional: when unset, LiteLLM falls back to each
+        # provider's own env var (OPENAI_API_KEY, ANTHROPIC_API_KEY, AWS creds,
+        # ...) or a LiteLLM proxy. Omit blanks rather than sending empty strings.
+        if self.api_key and self.api_key != "dummy":
+            kwargs["api_key"] = self.api_key
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+
+        # Some reasoning models reject `temperature`; mirror the OpenAI path.
+        model_lower = self.model.lower()
+        drops_temperature = any(
+            x in model_lower for x in ("opus-4-7", "opus-4-8", "gpt-5.4-pro")
+        )
+        if not drops_temperature:
+            kwargs["temperature"] = self.temperature
+        if self.enable_thinking is not None:
+            kwargs["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": self.enable_thinking}
+            }
+
+        response = await litellm.acompletion(**kwargs)
+
+        generated_text = response.choices[0].message.content or ""
+
+        usage = {}
+        if getattr(response, "usage", None):
             usage = {
                 "prompt_tokens": response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,
