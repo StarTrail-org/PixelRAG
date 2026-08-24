@@ -185,6 +185,9 @@ async def _cdp_send(ws, msg_id_ref: list, method: str, params: dict | None = Non
 # before giving up and capturing whatever is there. Keeps a hanging page from
 # stalling a worker.
 LOAD_TIMEOUT_MS = 12_000
+# Web-font loads are allowed a short grace period, but must not stall a render:
+# a server can leave a font response open indefinitely.
+FONT_TIMEOUT_MS = 2_000
 # The network is considered idle once at most NET_IDLE_MAX_INFLIGHT requests
 # have been in flight for NET_QUIET_MS (Puppeteer's "networkidle2" semantics).
 # Tolerating 2 in-flight requests is what makes this usable on arbitrary web
@@ -352,7 +355,10 @@ def _readiness_expr() -> str:
             const t = setTimeout(res, {LOAD_TIMEOUT_MS});
             window.addEventListener('load', () => {{ clearTimeout(t); res(); }}, {{ once: true }});
         }});
-        await document.fonts.ready;
+        await Promise.race([
+            document.fonts.ready,
+            new Promise(r => setTimeout(r, {FONT_TIMEOUT_MS})),
+        ]);
         // Let layout settle over two frames — but cap it: requestAnimationFrame
         // never ticks in some headless modes (e.g. google-chrome --headless=new
         // with no compositor frames scheduled), where awaiting rAF would hang.
