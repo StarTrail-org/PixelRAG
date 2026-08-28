@@ -38,6 +38,11 @@ const PORT = parseInt(process.env.AGENT_PORT || "30010", 10)
 const SEARCH_URL = process.env.PIXELRAG_SEARCH_URL || "https://api.pixelrag.ai"
 const MAX_BUDGET = parseFloat(process.env.CHAT_MAX_BUDGET_USD || "2.00")
 const THINKING_TOKENS = parseInt(process.env.CHAT_THINKING_TOKENS || "2000", 10)
+// The system prompt's own worst case — two searches (image-then-text), four
+// tiles, then an answer — lands on eight turns exactly, so a cap of 8 cut off
+// the strategy it asks for. Cost is bounded by CHAT_MAX_BUDGET_USD, which had
+// never once been the binding limit; the turn cap always fired first.
+const MAX_TURNS = parseInt(process.env.CHAT_MAX_TURNS || "12", 10)
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*"
 
 // Rate limiting — protects the subscription on a public endpoint.
@@ -307,15 +312,15 @@ const server = http.createServer(async (req, res) => {
     const mcpServer = createSdkMcpServer({ name: "pixelrag", version: "1.0.0", tools })
 
     inFlight++
+    let sentText = false
     try {
-      let sentText = false
       for await (const message of query({
         prompt,
         options: {
           systemPrompt: SYSTEM_PROMPT,
           mcpServers: { pixelrag: mcpServer },
           allowedTools: ["mcp__pixelrag__pixelrag_search", "mcp__pixelrag__pixelrag_tile"],
-          maxTurns: 8,
+          maxTurns: MAX_TURNS,
           maxBudgetUsd: MAX_BUDGET,
           maxThinkingTokens: THINKING_TOKENS,
           includePartialMessages: true,
@@ -349,8 +354,23 @@ const server = http.createServer(async (req, res) => {
         log(`chat done in ${elapsed}s`)
       }
     } catch (err) {
-      log("chat error:", String(err))
-      send("error", { message: String(err) })
+      const detail = String(err)
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+      // Hitting the turn cap is not a failed turn — the model has usually read
+      // real tiles by then. Discarding that and emitting a raw SDK error string
+      // throws away work the user already waited for.
+      if (/Reached maximum number of turns/i.test(detail)) {
+        if (!sentText) {
+          send("text", {
+            text: "I ran out of steps before I could finish reading the Wikipedia tiles for this one. A narrower or more specific question usually gets there.",
+          })
+        }
+        send("done", { truncated: true })
+        log(`chat TURN-CAPPED in ${elapsed}s (partial answer: ${sentText})`)
+      } else {
+        log("chat error:", detail)
+        send("error", { message: detail })
+      }
     } finally {
       inFlight--
       res.end()

@@ -60,6 +60,9 @@ interface ChatMessage {
   // grounded in Wikipedia tiles. Marked so the answer cannot be mistaken for
   // an ordinary one.
   degraded?: boolean
+  // The turn cap stopped the agent mid-investigation. Unlike `degraded`, what
+  // it did say is grounded — it is just incomplete.
+  truncated?: boolean
 }
 
 const EXAMPLES = [
@@ -179,7 +182,7 @@ function ChatPageInner() {
         case "search_results": return { ...m, searching: undefined, searches: [...(m.searches || []), { query: data.query as string, hits: data.hits as SearchResult["hits"] }] }
         case "viewing_tile": return { ...m, viewingTile: true, tiles: [...(m.tiles || []), { article_id: data.article_id as number, tile_index: data.tile_index as number, chunk_index: data.chunk_index as number }] }
         case "search_unavailable": return { ...m, searching: undefined, degraded: true }
-        case "done": return { ...m, searching: undefined, viewingTile: false, degraded: m.degraded || Boolean(data.degraded) }
+        case "done": return { ...m, searching: undefined, viewingTile: false, degraded: m.degraded || Boolean(data.degraded), truncated: Boolean(data.truncated) }
         case "error": return { ...m, content: m.content || `Error: ${data.message}`, searching: undefined }
         default: return m
       }
@@ -458,6 +461,15 @@ function AssistantMessage({ message, isStreaming, onTileClick }: { message: Chat
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
           <span className="text-[12px] leading-[1.6] text-[var(--chat-secondary)]">
             Visual search was unavailable, so this reply was not read off Wikipedia screenshots. Try again in a moment.
+          </span>
+        </div>
+      )}
+
+      {message.truncated && !message.degraded && (
+        <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-[var(--chat-border)] bg-[var(--chat-card)] px-3.5 py-2.5">
+          <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--chat-muted)]" />
+          <span className="text-[12px] leading-[1.6] text-[var(--chat-secondary)]">
+            Stopped early — this answer is based on the tiles read so far, not a finished search.
           </span>
         </div>
       )}

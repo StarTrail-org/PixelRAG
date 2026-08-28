@@ -352,8 +352,8 @@ export async function POST(req: Request) {
         tools,
       })
 
+      let sentText = false
       try {
-        let sentText = false
         for await (const message of query({
           prompt,
           options: {
@@ -363,7 +363,7 @@ export async function POST(req: Request) {
               "mcp__pixelrag__pixelrag_search",
               "mcp__pixelrag__pixelrag_tile",
             ],
-            maxTurns: 8,
+            maxTurns: parseInt(process.env.CHAT_MAX_TURNS || "12", 10),
             maxBudgetUsd: parseFloat(
               process.env.CHAT_MAX_BUDGET_USD || "0.50"
             ),
@@ -405,7 +405,20 @@ export async function POST(req: Request) {
           send("done", {})
         }
       } catch (err) {
-        send("error", { message: String(err) })
+        const detail = String(err)
+        // Hitting the turn cap is not a failed turn — the model has usually
+        // read real tiles by then, and discarding that to emit a raw SDK error
+        // string throws away work the user already waited for.
+        if (/Reached maximum number of turns/i.test(detail)) {
+          if (!sentText) {
+            send("text", {
+              text: "I ran out of steps before I could finish reading the Wikipedia tiles for this one. A narrower or more specific question usually gets there.",
+            })
+          }
+          send("done", { truncated: true })
+        } else {
+          send("error", { message: detail })
+        }
       } finally {
         controller.close()
       }
