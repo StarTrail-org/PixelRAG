@@ -14,6 +14,9 @@ Usage:
 
     # OpenRouter API (no local vLLM)
     python run_bench.py --task simpleqa --model openai/gpt-4 --open-router --api-key sk-or-v1-xxx
+
+    # OrcaRouter API (no local vLLM)
+    python run_bench.py --task simpleqa --model anthropic/claude-opus-4-8 --orcarouter
 """
 
 import argparse
@@ -977,6 +980,18 @@ async def run_async(args):
             )
         logger.info(f"Using Commonstack API with model: {args.model}")
         model = args.model
+    elif args.orcarouter:
+        api_base = "https://api.orcarouter.ai/v1"
+        if args.api_key and args.api_key != "dummy":
+            api_key = args.api_key
+        else:
+            api_key = os.getenv("ORCAROUTER_API_KEY")
+        if not api_key or api_key == "dummy":
+            raise ValueError(
+                "OrcaRouter API key required. Set --api-key or ORCAROUTER_API_KEY environment variable."
+            )
+        logger.info(f"Using OrcaRouter API with model: {args.model}")
+        model = args.model
     else:
         # Override with command-line args if provided
         # For Gemini, api_base from config is None, so use command-line arg or default
@@ -1106,7 +1121,7 @@ async def run_async(args):
         max_context_tokens=args.model_context_length,
         timeout=args.timeout,
         enable_thinking=(False if args.no_think else None),
-        force_openai_compat=(args.open_router or args.commonstack),
+        force_openai_compat=(args.open_router or args.commonstack or args.orcarouter),
     )
 
     # 3b. Create pixel-compressed encoder for generation if requested
@@ -1322,6 +1337,11 @@ def main():
         "--commonstack",
         action="store_true",
         help="Use Commonstack API (https://api.commonstack.ai). Requires --api-key or COMMONSTACK_API_KEY env var.",
+    )
+    parser.add_argument(
+        "--orcarouter",
+        action="store_true",
+        help="Use OrcaRouter API (https://www.orcarouter.ai). Requires --api-key or ORCAROUTER_API_KEY env var.",
     )
 
     # General args

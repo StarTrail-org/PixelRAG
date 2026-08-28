@@ -48,3 +48,25 @@ def test_minimax_model_config_does_not_match_unregistered_models(monkeypatch):
 
     assert config["api_base"] == "http://localhost:9000/v1"
     assert config["model"] == "MiniMax-M2.7-highspeed"
+
+
+def test_orcarouter_model_config_uses_default_endpoint_and_key(monkeypatch):
+    monkeypatch.delenv("ORCAROUTER_API_BASE", raising=False)
+    monkeypatch.delenv("ORCAROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("API_KEY", "fallback-key")
+
+    assert get_model_config("anthropic/claude-opus-4-8-orcarouter") == {
+        "api_base": "https://api.orcarouter.ai/v1",
+        "api_key": "fallback-key",
+        "model": "anthropic/claude-opus-4-8-orcarouter",
+    }
+
+
+def test_orcarouter_model_config_supports_endpoint_and_key_overrides(monkeypatch):
+    monkeypatch.setenv("ORCAROUTER_API_BASE", "https://orcarouter.example.com/v1")
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "provider-key")
+
+    config = get_model_config("openai/gpt-5.4-orcarouter")
+
+    assert config["api_base"] == "https://orcarouter.example.com/v1"
+    assert config["api_key"] == "provider-key"

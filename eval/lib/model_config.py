@@ -11,6 +11,10 @@ MINIMAX_MODELS = {
     "minimax-m2.7": "MiniMax-M2.7",
 }
 
+# OrcaRouter's OpenAI-compatible endpoint. Any model ID it exposes (e.g.
+# "openai/gpt-5.4", "anthropic/claude-opus-4-8") can be routed through it.
+ORCAROUTER_API_BASE = "https://api.orcarouter.ai/v1"
+
 
 def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
     """
@@ -31,6 +35,14 @@ def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
             "api_base": os.getenv("MINIMAX_API_BASE", "https://api.minimax.io/v1"),
             "api_key": os.getenv("MINIMAX_API_KEY", os.getenv("API_KEY", "dummy")),
             "model": minimax_model,
+        }
+
+    # OrcaRouter models (OpenAI-compatible gateway)
+    if "orcarouter" in model_lower:
+        return {
+            "api_base": os.getenv("ORCAROUTER_API_BASE", ORCAROUTER_API_BASE),
+            "api_key": os.getenv("ORCAROUTER_API_KEY", os.getenv("API_KEY", "dummy")),
+            "model": model_name,
         }
 
     # Gemini models
