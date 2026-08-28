@@ -39,6 +39,25 @@ index or model with zero downtime:
 This is preferred over restarting a slot in place, which reloads the (large) FAISS index and would
 mean minutes of downtime.
 
+**Enable the slot you switch to.** `systemctl start` on a slot survives until the next reboot and
+no further — a slot that is running but not enabled comes back as a 502 the first time the box
+restarts, long after whoever started it has stopped watching. Both slot units and the agent should
+be `enabled`, and `systemctl is-enabled` on each of them belongs in the post-cutover check.
+
+## Monitoring
+The agent exposes two different questions, and monitoring wants the second one:
+
+- `GET /health` — **liveness**. The process is up. It answers 200 even when the search API behind
+  it is gone.
+- `GET /ready` — **readiness**. The process is up *and* the search API answers. 200 when the agent
+  can actually retrieve, 503 with the reason when it cannot.
+
+The distinction is not academic. With the index unreachable, the agent still accepts chats and the
+model still writes fluent answers — from its own memory rather than from retrieved tiles. Liveness
+stays green throughout, so a monitor watching only `/health` reports a healthy service that is
+silently answering off-corpus. Those turns now end as degraded rather than done and log as
+`chat DEGRADED`, and the frontend marks the reply as not grounded.
+
 ## Files
 - `deploy.sh` — CD restart logic (invoked by the Deploy workflow)
 - `api-switch.sh` — blue-green cutover + rollback

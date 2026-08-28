@@ -6,6 +6,19 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod"
 
+import {
+  RETRIEVAL_OK,
+  RETRIEVAL_BACKEND_DOWN,
+  classifyStatus,
+  classifyThrow,
+  createRetrievalHealth,
+  recordRetrieval,
+  isUngrounded,
+  backendDownInstruction,
+  UNGROUNDED_CLIENT_MESSAGE,
+  type RetrievalHealth,
+} from "@/lib/retrieval-health.mjs"
+
 const SEARCH_URL =
   process.env.PIXELRAG_SEARCH_URL || "https://api.pixelrag.ai"
 
@@ -41,9 +54,27 @@ function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+// An unreachable index is not information for the model to work around: it
+// ends the turn. Recorded on the turn's health so the stream can close as
+// degraded instead of done.
+function retrievalDown(
+  health: RetrievalHealth,
+  onEvent: (event: string, data: unknown) => void,
+  label: string,
+  detail: string
+) {
+  recordRetrieval(health, RETRIEVAL_BACKEND_DOWN, detail)
+  onEvent("search_unavailable", { query: label, reason: detail })
+  return {
+    content: [{ type: "text" as const, text: backendDownInstruction(detail) }],
+    isError: true,
+  }
+}
+
 function createTools(
   onEvent: (event: string, data: unknown) => void,
-  uploadedImage: string | null
+  uploadedImage: string | null,
+  health: RetrievalHealth
 ) {
   const searchTool = tool(
     "pixelrag_search",
@@ -97,17 +128,27 @@ function createTools(
           : args.query || "uploaded image"
       onEvent("searching", { query: label })
 
-      const resp = await fetch(`${SEARCH_URL}/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Source": "chat" },
-        body: JSON.stringify({
-          queries: [queryObj],
-          n_docs: args.n_results ?? 5,
-          articles_only: true,
-        }),
-        signal: AbortSignal.timeout(30000),
-      })
-      if (!resp.ok) {
+      let resp: Response
+      try {
+        resp = await fetch(`${SEARCH_URL}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Source": "chat" },
+          body: JSON.stringify({
+            queries: [queryObj],
+            n_docs: args.n_results ?? 5,
+            articles_only: true,
+          }),
+          signal: AbortSignal.timeout(30000),
+        })
+      } catch (err) {
+        return retrievalDown(health, onEvent, label, String(err))
+      }
+      const outcome = classifyStatus(resp.status)
+      if (outcome === RETRIEVAL_BACKEND_DOWN) {
+        return retrievalDown(health, onEvent, label, `HTTP ${resp.status}`)
+      }
+      if (outcome !== RETRIEVAL_OK) {
+        recordRetrieval(health, outcome, `HTTP ${resp.status}`)
         return {
           content: [
             {
@@ -117,6 +158,7 @@ function createTools(
           ],
         }
       }
+      recordRetrieval(health, RETRIEVAL_OK)
       const data = await resp.json()
       const hits: SearchHit[] = data.results?.[0]?.hits ?? []
       const results = hits.map((h: SearchHit) => {
@@ -176,6 +218,9 @@ function createTools(
           })
         }
         if (!resp.ok) {
+          if (classifyStatus(resp.status) === RETRIEVAL_BACKEND_DOWN) {
+            recordRetrieval(health, RETRIEVAL_BACKEND_DOWN, `tile HTTP ${resp.status}`)
+          }
           return {
             content: [
               {
@@ -200,6 +245,7 @@ function createTools(
           ],
         }
       } catch (err) {
+        recordRetrieval(health, classifyThrow(err), `tile ${err}`)
         return {
           content: [
             {
@@ -298,7 +344,8 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(sseEvent(event, data)))
       }
 
-      const tools = createTools(send, uploadedImage)
+      const health = createRetrievalHealth()
+      const tools = createTools(send, uploadedImage, health)
       const mcpServer = createSdkMcpServer({
         name: "pixelrag",
         version: "1.0.0",
@@ -351,7 +398,12 @@ export async function POST(req: Request) {
           }
         }
 
-        send("done", {})
+        if (isUngrounded(health)) {
+          send("error", { message: UNGROUNDED_CLIENT_MESSAGE })
+          send("done", { degraded: true })
+        } else {
+          send("done", {})
+        }
       } catch (err) {
         send("error", { message: String(err) })
       } finally {
