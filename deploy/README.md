@@ -36,6 +36,17 @@ index or model with zero downtime:
    with a graceful reload (no dropped connections), and repoints + restarts the agent.
 3. **Rollback** = `deploy/api-switch.sh <other-port>`.
 
+`api-switch.sh` moves **this host** — its nginx upstream and the agent. If public
+traffic reaches the host through something in front of it (a relay, reverse proxy
+or tunnel endpoint), that layer picks the slot for public requests and the script
+does not touch it: the switch then completes locally, reports success, and public
+traffic keeps hitting the old slot. Point `PIXELRAG_INGRESS_SWITCH_HOOK` at a
+script that moves that layer too — it receives the chosen port and must exit 0,
+and a non-zero exit fails the switch rather than leaving the two halves disagreeing.
+
+Whichever way you switch, verify the **public** endpoint afterwards. A local
+health check passes in exactly the case this warning is about.
+
 This is preferred over restarting a slot in place, which reloads the (large) FAISS index and would
 mean minutes of downtime.
 
