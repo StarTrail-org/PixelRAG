@@ -24,8 +24,8 @@ import base64
 import io
 import json
 import logging
-import shutil
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -34,6 +34,8 @@ import urllib.request
 from pathlib import Path
 
 from PIL import Image
+
+from .page_metrics import CONTENT_BOTTOM_JS, truncation_reason
 
 logger = logging.getLogger("pixelrag_render.backends.cdp")
 
@@ -183,6 +185,9 @@ async def _cdp_send(ws, msg_id_ref: list, method: str, params: dict | None = Non
 # before giving up and capturing whatever is there. Keeps a hanging page from
 # stalling a worker.
 LOAD_TIMEOUT_MS = 12_000
+# Web-font loads are allowed a short grace period, but must not stall a render:
+# a server can leave a font response open indefinitely.
+FONT_TIMEOUT_MS = 2_000
 # The network is considered idle once at most NET_IDLE_MAX_INFLIGHT requests
 # have been in flight for NET_QUIET_MS (Puppeteer's "networkidle2" semantics).
 # Tolerating 2 in-flight requests is what makes this usable on arbitrary web
@@ -344,12 +349,16 @@ def _readiness_expr() -> str:
     Returns an async-IIFE expression resolving to the page height to tile.
     """
     return f"""(async () => {{
+        {CONTENT_BOTTOM_JS}
         await new Promise(res => {{
             if (document.readyState === 'complete') return res();
             const t = setTimeout(res, {LOAD_TIMEOUT_MS});
             window.addEventListener('load', () => {{ clearTimeout(t); res(); }}, {{ once: true }});
         }});
-        await document.fonts.ready;
+        await Promise.race([
+            document.fonts.ready,
+            new Promise(r => setTimeout(r, {FONT_TIMEOUT_MS})),
+        ]);
         // Let layout settle over two frames — but cap it: requestAnimationFrame
         // never ticks in some headless modes (e.g. google-chrome --headless=new
         // with no compositor frames scheduled), where awaiting rAF would hang.
@@ -361,8 +370,7 @@ def _readiness_expr() -> str:
         const sh = document.documentElement.scrollHeight;
         const body = document.body;
         if (body) {{
-            const bottom = Math.ceil(body.getBoundingClientRect().bottom);
-            return Math.min(sh, Math.max(bottom, 1));
+            return Math.min(sh, Math.max(contentBottom(body), 1));
         }}
         return sh;
     }})()"""
@@ -436,8 +444,13 @@ async def capture_url(
         },
     )
     try:
-        page_height = result["result"]["value"]
-    except (KeyError, TypeError):
+        page_height = int(result["result"]["value"])
+    except (KeyError, TypeError, ValueError):
+        page_height = 0
+    # A zero/negative height is as much a probe failure as a missing one, and
+    # would otherwise tile nothing at all while still claiming success.
+    height_measured = page_height > 0
+    if not height_measured:
         page_height = tile_h
 
     tiles = []
@@ -499,11 +512,24 @@ async def capture_url(
         idx += 1
         y += tile_h
 
+    reason = truncation_reason(page_height, tile_h, measured=height_measured)
+    if reason:
+        logger.warning(
+            "%s: %s — capturing what is on screen and marking the manifest incomplete",
+            url,
+            reason,
+        )
+
     manifest = {
         "url": url,
         "page_height": page_height,
+        # The geometry the capture ran at. Recorded so a consumer reading
+        # tiles.json later can redo the page_height/tile_height comparison
+        # itself instead of being told the tile height out of band.
+        "tile_height": tile_h,
+        "viewport_width": viewport_w,
         "tiles": tiles,
-        "complete": True,
+        "complete": reason is None,
     }
     with open(tile_dir / "tiles.json", "w") as f:
         json.dump(manifest, f)
@@ -960,7 +986,7 @@ def render_urls(
         def _navtarget(u: str) -> str:
             if u.startswith("http"):
                 return u
-            return u[len("file://") :] if u.startswith("file://") else u
+            return u.removeprefix("file://")
 
         articles = [
             {"path": f"{stem}.png", "file": _navtarget(url)}

@@ -386,8 +386,7 @@ def render(
         if claimed_at and claimed_at < m["earliest_claim"]:
             m["earliest_claim"] = claimed_at
         hb = c.get("heartbeat", 0)
-        if hb > m["latest_heartbeat"]:
-            m["latest_heartbeat"] = hb
+        m["latest_heartbeat"] = max(m["latest_heartbeat"], hb)
 
         # Collect disk_free_gb (use the latest heartbeat value)
         if "disk_free_gb" in c:

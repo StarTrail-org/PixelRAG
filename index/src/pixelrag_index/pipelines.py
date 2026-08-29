@@ -116,7 +116,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
 
     # Stage 1: Render documents to tiles
     # Use sequential integer IDs as tile directory names so embed/serve can map them
-    from pixelrag_render.render import render_urls, render_pdf
+    from pixelrag_render.render import render_pdf, render_urls
 
     logger.info("Stage 1/4: Rendering %d documents to tiles...", len(docs))
 

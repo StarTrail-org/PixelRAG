@@ -34,6 +34,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from .page_metrics import CONTENT_BOTTOM_JS, truncation_reason
+
 logger = logging.getLogger("pixelrag_render.backends.fast_cdp")
 
 VIEWPORT_WIDTH = 875
@@ -58,8 +60,12 @@ CHROME_ARGS = [
     "--disable-features=Translate,MediaRouter,OptimizationHints",
 ]
 
-# JS: wait for fonts + eager images, then return scrollHeight
-_WAIT_FONTS_IMGS = """new Promise(resolve => {
+# JS: wait for fonts + eager images, then return the page height to tile
+_WAIT_FONTS_IMGS = (
+    """new Promise(resolve => {
+    """
+    + CONTENT_BOTTOM_JS
+    + """
     const waitEagerImgs = Promise.all(
         Array.from(document.images)
             .filter(i => !i.complete && i.loading !== 'lazy')
@@ -79,17 +85,54 @@ _WAIT_FONTS_IMGS = """new Promise(resolve => {
                 const sh = document.documentElement.scrollHeight;
                 const body = document.body;
                 resolve(body
-                    ? Math.min(sh, Math.max(Math.ceil(body.getBoundingClientRect().bottom), 1))
+                    ? Math.min(sh, Math.max(contentBottom(body), 1))
                     : sh);
             });
         });
     });
 })"""
+)
 
 
 # ---------------------------------------------------------------------------
 # Subprocess: JPEG compression (runs in ProcessPoolExecutor worker)
 # ---------------------------------------------------------------------------
+
+
+def _pin_to_cores(cores) -> None:
+    """Pool initializer: keep compression workers off the capture cores.
+
+    Module level, not a closure, because the pool is started with "spawn" — the
+    initializer has to survive pickling, which a nested function does not.
+    """
+    try:
+        os.sched_setaffinity(0, cores)
+    except (OSError, AttributeError):
+        pass  # not Linux, or the affinity call is unavailable — harmless
+
+
+def _raw_scratch_dir() -> Path:
+    """Per-user scratch directory on /dev/shm for Chrome's raw BGRA dumps.
+
+    `/dev/shm` is shared by every user on the box, so a fixed path belongs to
+    whoever ran first: the directory lands at 0775 owned by them, and for every
+    later user `mkdir(exist_ok=True)` still succeeds while Chrome's write into it
+    is denied. That combination is silent — capture reports success, the manifest
+    claims N tiles, and not one image is written. Scoping the path to the current
+    uid keeps users out of each other's way.
+
+    The writability check is here rather than at first write because the failure
+    it catches surfaces inside Chrome, whose stderr this backend discards.
+    """
+    d = Path(f"/dev/shm/pixelrag_render-{os.getuid()}/raw")
+    d.mkdir(parents=True, exist_ok=True)
+    if not os.access(d, os.W_OK):
+        raise RuntimeError(
+            f"{d} is not writable by uid {os.getuid()}. Chrome writes raw tiles "
+            "there; without write access every capture is silently lost. Remove "
+            "the directory and re-run, or set the turbo path aside with turbo=False."
+        )
+    return d
 
 
 def compress_tile(raw_path: str, out_path: str, quality: int = 85) -> None:
@@ -278,8 +321,7 @@ async def _run_render(
     jpeg_quality: int,
     n_compressors: int,
 ) -> dict:
-    raw_dir = Path("/dev/shm/pixelrag_render/raw")
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = _raw_scratch_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Semaphore: limit concurrent captures (CPU-bound) to n_workers // 2
@@ -289,7 +331,7 @@ async def _run_render(
     # Compression: dedicated thread with its own multiprocessing.Pool.
     # Tiles are pushed to a thread-safe queue from capture workers.
     # The thread runs pool.starmap in batches, fully independent of asyncio.
-    from multiprocessing import Pool as MPPool
+    import multiprocessing
     import queue as _queue
     import threading
 
@@ -305,15 +347,20 @@ async def _run_render(
     n_cpus = os.cpu_count() or 128
     compress_cores = set(range(max(0, n_cpus - n_compressors), n_cpus))
 
-    def _pool_init():
-        try:
-            os.sched_setaffinity(0, compress_cores)
-        except OSError:
-            pass
-
     def _compressor_thread():
-        pool = MPPool(processes=n_compressors, initializer=_pool_init)
-        # Warm up: ensure all workers are forked and idle before capture starts
+        # "spawn", not the platform default. This pool is created from a thread while
+        # the capture side already runs its own threads, and forking a multi-threaded
+        # process can deadlock the child on a lock that was held at fork time — CPython
+        # warns about exactly this since 3.12. In a single-threaded caller the fork
+        # happens to work, which is why it survived so long; under any threaded host
+        # (a test session that ran async tests first, a web server calling into the
+        # renderer) it hangs with no output and no error.
+        pool = multiprocessing.get_context("spawn").Pool(
+            processes=n_compressors,
+            initializer=_pin_to_cores,
+            initargs=(compress_cores,),
+        )
+        # Warm up: ensure all workers are up and idle before capture starts
         pool.map(int, range(n_compressors))
         async_results = []
         while True:
@@ -321,12 +368,24 @@ async def _run_render(
             if item is None:
                 break
             async_results.append(pool.apply_async(compress_tile, item))
-        # Wait for all remaining
+        # Wait for all remaining. A compression failure means that tile never
+        # reached disk, so it has to be counted and logged: swallowing it let a
+        # run report "Done: 13 tiles" with an empty output directory.
+        failed = 0
         for ar in async_results:
             try:
                 ar.get(timeout=60)
-            except Exception:
-                pass
+            except Exception as e:
+                failed += 1
+                if failed <= 3:  # one line per failure is enough to diagnose
+                    logger.error("tile compression failed: %s: %s", type(e).__name__, e)
+        if failed:
+            logger.error(
+                "%d/%d tiles failed to compress and were NOT written to disk",
+                failed,
+                len(async_results),
+            )
+            metrics["errors"] += failed
         pool.close()
         pool.join()
         compress_done.set()
@@ -433,9 +492,11 @@ async def _run_render(
                         },
                     )
                     page_h = r["result"]["result"]["value"]
-                    if not page_h or page_h <= 0:
+                    height_measured = bool(page_h) and page_h > 0
+                    if not height_measured:
                         page_h = tile_height
                 except Exception:
+                    height_measured = False
                     page_h = tile_height
 
                 n_tiles = max(1, (page_h + tile_height - 1) // tile_height)
@@ -527,13 +588,29 @@ async def _run_render(
                     n_written += 1
                     tile_names.append(f"tile_{t:04d}.jpg")
 
-                # Write manifest
+                # Write manifest. `complete` has to mean something here too —
+                # see page_metrics.truncation_reason; the standard path applies
+                # the identical rule, so a manifest reads the same whichever
+                # Chrome the capture happened to run on.
+                reason = truncation_reason(
+                    page_h, tile_height, measured=height_measured
+                )
+                if reason:
+                    logger.warning(
+                        "[w%d] %s: %s — marking the manifest incomplete",
+                        wi,
+                        art_path,
+                        reason,
+                    )
+
                 manifest = {
                     "path": art_path,
                     "url": target_url,
                     "page_height": page_h,
+                    "tile_height": tile_height,
+                    "viewport_width": VIEWPORT_WIDTH,
                     "tiles": tile_names,
-                    "complete": True,
+                    "complete": reason is None,
                 }
                 with open(tile_dir / "tiles.json", "w") as f:
                     json.dump(manifest, f)

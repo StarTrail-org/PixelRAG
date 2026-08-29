@@ -154,11 +154,11 @@ def load_encyclopedic_vqa_data(
                 example[col] = row[col]
 
         # Map wikipedia_url into metadata so screenshot/retrieval pipeline can find it
-        if "wikipedia_url" in example and example["wikipedia_url"]:
+        if example.get("wikipedia_url"):
             example["metadata"] = {"url": example["wikipedia_url"]}
 
         # Parse dataset_image_ids for query images (iNaturalist or Google Landmarks)
-        if "dataset_image_ids" in example and example["dataset_image_ids"]:
+        if example.get("dataset_image_ids"):
             raw_ids = str(example["dataset_image_ids"])
             ids = [i.strip() for i in raw_ids.split("|") if i.strip()]
             example["dataset_image_ids_parsed"] = ids

@@ -41,16 +41,18 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 _request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "request_id",
@@ -88,6 +90,35 @@ logging.basicConfig(
 )
 for handler in logging.getLogger().handlers:
     handler.addFilter(_RequestIDFilter())
+
+_query_log_lock = threading.Lock()
+_query_log_path: Path | None = None
+
+
+def _init_query_log():
+    global _query_log_path
+    log_dir = Path(os.environ.get("PIXELRAG_QUERY_LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _query_log_path = log_dir / "queries.jsonl"
+
+
+def _log_query(req: "SearchRequest", request_id: str, source: str | None = None):
+    if _query_log_path is None:
+        return
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "source": source,
+        "queries": [q.text for q in req.queries],
+        "has_image": [q.image is not None for q in req.queries],
+        "n_docs": req.n_docs,
+        "department": req.department,
+    }
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with _query_log_lock:
+        with open(_query_log_path, "a") as f:
+            f.write(line)
+
 
 app = FastAPI(title="PixelRAG Search API")
 
@@ -141,7 +172,9 @@ class Query(BaseModel):
 
 class SearchRequest(BaseModel):
     queries: list[Query]
-    n_docs: int = 10
+    # Bounded: fetch_k = n_docs * 10 feeds FAISS search k, so an unbounded value
+    # is a trivial OOM/DoS on the public endpoint. Largest real caller uses 10.
+    n_docs: int = Field(default=10, ge=1, le=1000)
     nprobe: int | None = None  # override default nprobe
     min_tile_height: int | None = None  # filter out small/blank chunks
     instruction: str | None = None  # override query embedding instruction
@@ -431,7 +464,7 @@ def _resolve_url(article_id: int) -> str:
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search(req: SearchRequest):
+async def search(req: SearchRequest, request: Request):
     t0 = time.time()
 
     # Encode queries
@@ -540,6 +573,8 @@ async def search(req: SearchRequest):
         time.time() - t0,
     )
 
+    _log_query(req, _request_id_ctx.get(), request.headers.get("X-Source"))
+
     return SearchResponse(results=results)
 
 
@@ -616,6 +651,7 @@ async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
 
 def load(args):
     """Load index, metadata, model, and articles.json."""
+    _init_query_log()
     import torch
 
     device = args.device
@@ -815,9 +851,9 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-VL-Embedding-2B")
     parser.add_argument(
         "--device",
-        choices=["cpu", "cuda"],
+        choices=["cpu", "cuda", "mps"],
         default="cpu",
-        help="Device to run inference on: cpu (default) or cuda",
+        help="Device to run inference on: cpu (default), cuda, or mps",
     )
     parser.add_argument(
         "--peft-adapter",

@@ -22,10 +22,27 @@ import http from "node:http"
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod"
 
+import {
+  RETRIEVAL_OK,
+  RETRIEVAL_BACKEND_DOWN,
+  classifyStatus,
+  classifyThrow,
+  createRetrievalHealth,
+  recordRetrieval,
+  isUngrounded,
+  backendDownInstruction,
+  UNGROUNDED_CLIENT_MESSAGE,
+} from "./lib/retrieval-health.mjs"
+
 const PORT = parseInt(process.env.AGENT_PORT || "30010", 10)
 const SEARCH_URL = process.env.PIXELRAG_SEARCH_URL || "https://api.pixelrag.ai"
 const MAX_BUDGET = parseFloat(process.env.CHAT_MAX_BUDGET_USD || "2.00")
 const THINKING_TOKENS = parseInt(process.env.CHAT_THINKING_TOKENS || "2000", 10)
+// The system prompt's own worst case — two searches (image-then-text), four
+// tiles, then an answer — lands on eight turns exactly, so a cap of 8 cut off
+// the strategy it asks for. Cost is bounded by CHAT_MAX_BUDGET_USD, which had
+// never once been the binding limit; the turn cap always fired first.
+const MAX_TURNS = parseInt(process.env.CHAT_MAX_TURNS || "12", 10)
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*"
 
 // Rate limiting — protects the subscription on a public endpoint.
@@ -73,7 +90,16 @@ function log(...args) {
   console.log(new Date().toISOString(), ...args)
 }
 
-function createTools(onEvent, uploadedImage) {
+// An unreachable index is not information for the model to work around: it
+// ends the turn. Recorded on the turn's health so the stream can close as
+// degraded instead of done.
+function retrievalDown(health, onEvent, label, detail) {
+  recordRetrieval(health, RETRIEVAL_BACKEND_DOWN, detail)
+  onEvent("search_unavailable", { query: label, reason: detail })
+  return { content: [{ type: "text", text: backendDownInstruction(detail) }], isError: true }
+}
+
+function createTools(onEvent, uploadedImage, health) {
   const searchTool = tool(
     "pixelrag_search",
     "Search the visual Wikipedia index by text, by the user's uploaded image, or BOTH combined. When the user uploaded an image, you MUST set use_uploaded_image=true AND provide a text query to get joint image+text retrieval — this gives the best results. Returns ranked results with article URLs, tile positions, and `pages` — the article's valid tile:chunk ranges (e.g. '0:0-7,1:0-4' = tile 0 has chunks 0-7, tile 1 has chunks 0-4). Use this first, then pixelrag_tile to view tiles.",
@@ -96,15 +122,26 @@ function createTools(onEvent, uploadedImage) {
       if (args.query) queryObj.text = args.query
       const label = searchByImage && args.query ? `${args.query} + uploaded image` : args.query || "uploaded image"
       onEvent("searching", { query: label })
-      const resp = await fetch(`${SEARCH_URL}/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ queries: [queryObj], n_docs: args.n_results ?? 5, articles_only: true }),
-        signal: AbortSignal.timeout(30000),
-      })
-      if (!resp.ok) {
+      let resp
+      try {
+        resp = await fetch(`${SEARCH_URL}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Source": "chat" },
+          body: JSON.stringify({ queries: [queryObj], n_docs: args.n_results ?? 5, articles_only: true }),
+          signal: AbortSignal.timeout(30000),
+        })
+      } catch (err) {
+        return retrievalDown(health, onEvent, label, String(err))
+      }
+      const outcome = classifyStatus(resp.status)
+      if (outcome === RETRIEVAL_BACKEND_DOWN) {
+        return retrievalDown(health, onEvent, label, `HTTP ${resp.status}`)
+      }
+      if (outcome !== RETRIEVAL_OK) {
+        recordRetrieval(health, outcome, `HTTP ${resp.status}`)
         return { content: [{ type: "text", text: `Search API error: ${resp.status}` }] }
       }
+      recordRetrieval(health, RETRIEVAL_OK)
       const data = await resp.json()
       const hits = data.results?.[0]?.hits ?? []
       const results = hits.map((h) => {
@@ -141,13 +178,19 @@ function createTools(onEvent, uploadedImage) {
         // The agent pages through articles by guessing chunk coordinates, so
         // 404s are normal exploration — only surface tiles that actually load,
         // otherwise the chat gallery renders broken images.
-        if (!resp.ok) return { content: [{ type: "text", text: `Tile not found: ${resp.status}` }] }
+        if (!resp.ok) {
+          if (classifyStatus(resp.status) === RETRIEVAL_BACKEND_DOWN) {
+            recordRetrieval(health, RETRIEVAL_BACKEND_DOWN, `tile HTTP ${resp.status}`)
+          }
+          return { content: [{ type: "text", text: `Tile not found: ${resp.status}` }] }
+        }
         onEvent("viewing_tile", { article_id: args.article_id, tile_index: args.tile_index, chunk_index: args.chunk_index })
         const buffer = await resp.arrayBuffer()
         const base64 = Buffer.from(buffer).toString("base64")
         const mimeType = resp.headers.get("content-type") || "image/png"
         return { content: [{ type: "image", data: base64, mimeType }] }
       } catch (err) {
+        recordRetrieval(health, classifyThrow(err), `tile ${err}`)
         return { content: [{ type: "text", text: `Failed to fetch tile: ${err}` }] }
       }
     }
@@ -170,6 +213,24 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" })
     res.end(JSON.stringify({ status: "ok" }))
+    return
+  }
+
+  // Liveness (/health) says this process is up. Readiness says it can actually
+  // do its job: with the index unreachable the agent still answers chats, just
+  // from model memory instead of tiles. Monitoring needs to see that.
+  if (req.method === "GET" && req.url === "/ready") {
+    let searchOk = false
+    let detail = null
+    try {
+      const probe = await fetch(`${SEARCH_URL}/health`, { signal: AbortSignal.timeout(5000) })
+      searchOk = probe.ok
+      if (!probe.ok) detail = `search HTTP ${probe.status}`
+    } catch (err) {
+      detail = `search unreachable: ${err}`
+    }
+    res.writeHead(searchOk ? 200 : 503, { "Content-Type": "application/json" })
+    res.end(JSON.stringify({ status: searchOk ? "ready" : "degraded", search: searchOk ? "ok" : detail }))
     return
   }
 
@@ -246,19 +307,20 @@ const server = http.createServer(async (req, res) => {
 
     const send = (event, data) => res.write(sse(event, data))
     const uploadedImage = last?.image && typeof last.image === "string" ? last.image : null
-    const tools = createTools(send, uploadedImage)
+    const health = createRetrievalHealth()
+    const tools = createTools(send, uploadedImage, health)
     const mcpServer = createSdkMcpServer({ name: "pixelrag", version: "1.0.0", tools })
 
     inFlight++
+    let sentText = false
     try {
-      let sentText = false
       for await (const message of query({
         prompt,
         options: {
           systemPrompt: SYSTEM_PROMPT,
           mcpServers: { pixelrag: mcpServer },
           allowedTools: ["mcp__pixelrag__pixelrag_search", "mcp__pixelrag__pixelrag_tile"],
-          maxTurns: 8,
+          maxTurns: MAX_TURNS,
           maxBudgetUsd: MAX_BUDGET,
           maxThinkingTokens: THINKING_TOKENS,
           includePartialMessages: true,
@@ -282,11 +344,33 @@ const server = http.createServer(async (req, res) => {
           send("text", { text: message.result })
         }
       }
-      send("done", {})
-      log(`chat done in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+      if (isUngrounded(health)) {
+        send("error", { message: UNGROUNDED_CLIENT_MESSAGE })
+        send("done", { degraded: true })
+        log(`chat DEGRADED in ${elapsed}s — retrieval unavailable (${health.lastError})`)
+      } else {
+        send("done", {})
+        log(`chat done in ${elapsed}s`)
+      }
     } catch (err) {
-      log("chat error:", String(err))
-      send("error", { message: String(err) })
+      const detail = String(err)
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+      // Hitting the turn cap is not a failed turn — the model has usually read
+      // real tiles by then. Discarding that and emitting a raw SDK error string
+      // throws away work the user already waited for.
+      if (/Reached maximum number of turns/i.test(detail)) {
+        if (!sentText) {
+          send("text", {
+            text: "I ran out of steps before I could finish reading the Wikipedia tiles for this one. A narrower or more specific question usually gets there.",
+          })
+        }
+        send("done", { truncated: true })
+        log(`chat TURN-CAPPED in ${elapsed}s (partial answer: ${sentText})`)
+      } else {
+        log("chat error:", detail)
+        send("error", { message: detail })
+      }
     } finally {
       inFlight--
       res.end()

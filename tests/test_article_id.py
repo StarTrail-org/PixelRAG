@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 
 from PIL import Image
-
 from pixelrag_embed.chunk import chunk_article
 from pixelrag_embed.embed import scan_shard_chunks
 from pixelrag_embed.embed_cpu import scan_chunks
