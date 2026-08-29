@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { existsSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 const DESCRIPTION = `Screenshot a web page or document with pixelshot and read it visually.
@@ -29,6 +29,18 @@ function latestTilesDir(output) {
     .filter((path) => statSync(path).isDirectory())
   if (dirs.length === 0) return null
   return dirs.reduce((a, b) => (statSync(a).mtimeMs >= statSync(b).mtimeMs ? a : b))
+}
+
+// tiles.json is the manifest pixelshot writes beside the tiles: the ordered tile
+// list, plus `complete`, which is false when the capture could not be trusted to
+// cover the whole page. Returns null if it is missing or unreadable, in which case
+// the caller falls back to scanning the directory.
+function readManifest(tilesDir) {
+  try {
+    return JSON.parse(readFileSync(join(tilesDir, "tiles.json"), "utf8"))
+  } catch {
+    return null
+  }
 }
 
 export const PixelbrowsePlugin = async ({ $ }) => {
@@ -78,17 +90,29 @@ export const PixelbrowsePlugin = async ({ $ }) => {
             return `ERROR: pixelshot ran but produced no tiles in ${output}.\n${result.stdout.toString()}`
           }
 
-          const tiles = readdirSync(tilesDir)
-            .filter((name) => /^tile_\d+\.jpg$/.test(name))
-            .sort()
-            .map((name) => join(tilesDir, name))
+          const manifest = readManifest(tilesDir)
+          const names = manifest?.tiles?.length
+            ? manifest.tiles
+            : readdirSync(tilesDir)
+                .filter((name) => /^tile_\d+\.(jpg|png)$/.test(name))
+                .sort()
+          const tiles = names.map((name) => join(tilesDir, name))
 
           if (tiles.length === 0) return `ERROR: no tile images found in ${tilesDir}`
 
-          return [
+          const lines = [
             `Rendered ${args.target} to ${tiles.length} tile(s). Read them with the Read tool, in this order:`,
             ...tiles,
-          ].join("\n")
+          ]
+          if (manifest?.complete === false) {
+            lines.push(
+              "",
+              "WARNING: the manifest reports complete: false — pixelshot could not confirm " +
+                "it measured the whole page, so these tiles may be only the top of it. " +
+                "Report that alongside what you saw rather than presenting it as the full page."
+            )
+          }
+          return lines.join("\n")
         },
       }),
     },
