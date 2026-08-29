@@ -33,8 +33,7 @@ def render_url(
     Args:
         url: URL to capture (http:// or https:// or file://).
         output_dir: Directory to write tile subdirectories into.
-        backend: Rendering backend: ``"cdp"`` (default, fastest) or
-                 ``"playwright"`` (full-featured).
+        backend: Rendering backend. Only ``"cdp"`` is implemented.
         tile_height: Maximum tile height in pixels (default 8192).
         quality: JPEG quality 1-100 (default 85).
         viewport_width: Browser viewport width in pixels (default 875).
@@ -73,7 +72,7 @@ def render_urls(
     Args:
         urls: URLs to capture.
         output_dir: Directory to write tile subdirectories into.
-        backend: ``"cdp"`` (default) or ``"playwright"``.
+        backend: Rendering backend. Only ``"cdp"`` is implemented.
         stems: Optional list of output directory stems (one per URL).
                If provided, tiles are written to ``{output_dir}/{stem}.png.tiles/``
                instead of deriving names from URLs. Useful for assigning
@@ -205,7 +204,7 @@ def main() -> None:
         pixelshot report.pdf --output ./tiles
 
         # Local HTML
-        pixelshot index.html --output ./tiles --backend playwright
+        pixelshot index.html --output ./tiles
 
         # URL file
         pixelshot urls.txt --output ./tiles
@@ -252,7 +251,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=["cdp", "playwright"],
+        choices=["cdp"],
         default="cdp",
         help="Browser backend for URL/HTML rendering (default: cdp).",
     )
@@ -307,6 +306,13 @@ def main() -> None:
         "session (cookies/logins) — so authenticated pages work — then closes only "
         "that tab. Needs no local Chrome binary. Env: PIXELSHOT_CDP_URL.",
     )
+    parser.add_argument(
+        "--extract-text",
+        action="store_true",
+        help="Extract page text alongside tiles (hybrid output). Saves a text.md "
+        "file in each tile directory with the page's innerText. Useful for "
+        "reducing LLM token usage on text-heavy pages.",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -346,6 +352,7 @@ def main() -> None:
             viewport_width=args.viewport_width,
             workers=args.workers,
             wait_network_idle=args.wait_network_idle,
+            extract_text=args.extract_text,
             cdp_url=args.cdp_url,
         )
         results.extend(tile_dirs)
