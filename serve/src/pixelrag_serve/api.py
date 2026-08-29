@@ -849,9 +849,9 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-VL-Embedding-2B")
     parser.add_argument(
         "--device",
-        choices=["cpu", "cuda"],
+        choices=["cpu", "cuda", "mps"],
         default="cpu",
-        help="Device to run inference on: cpu (default) or cuda",
+        help="Device to run inference on: cpu (default), cuda, or mps",
     )
     parser.add_argument(
         "--peft-adapter",
