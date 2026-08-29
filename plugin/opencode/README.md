@@ -15,7 +15,7 @@ Then add the plugin to your `opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-pixelbrowse"]
+  "plugin": ["@startrail/pixelbrowse"]
 }
 ```
 

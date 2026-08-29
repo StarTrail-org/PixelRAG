@@ -28,5 +28,5 @@ No MCP server or backend — the skill just calls `pixelshot` (Playwright/CDP) o
 
 ## opencode
 
-An equivalent opencode plugin (a `screenshot` tool, shipped as the `opencode-pixelbrowse`
+An equivalent opencode plugin (a `screenshot` tool, shipped as the `@startrail/pixelbrowse`
 npm package) lives in [`opencode/`](opencode/).
