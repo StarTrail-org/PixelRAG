@@ -33,8 +33,7 @@ def render_url(
     Args:
         url: URL to capture (http:// or https:// or file://).
         output_dir: Directory to write tile subdirectories into.
-        backend: Rendering backend: ``"cdp"`` (default, fastest) or
-                 ``"playwright"`` (full-featured).
+        backend: Rendering backend. Only ``"cdp"`` is implemented.
         tile_height: Maximum tile height in pixels (default 8192).
         quality: JPEG quality 1-100 (default 85).
         viewport_width: Browser viewport width in pixels (default 875).
@@ -73,7 +72,7 @@ def render_urls(
     Args:
         urls: URLs to capture.
         output_dir: Directory to write tile subdirectories into.
-        backend: ``"cdp"`` (default) or ``"playwright"``.
+        backend: Rendering backend. Only ``"cdp"`` is implemented.
         stems: Optional list of output directory stems (one per URL).
                If provided, tiles are written to ``{output_dir}/{stem}.png.tiles/``
                instead of deriving names from URLs. Useful for assigning
@@ -205,7 +204,7 @@ def main() -> None:
         pixelshot report.pdf --output ./tiles
 
         # Local HTML
-        pixelshot index.html --output ./tiles --backend playwright
+        pixelshot index.html --output ./tiles
 
         # URL file
         pixelshot urls.txt --output ./tiles
@@ -252,7 +251,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=["cdp", "playwright"],
+        choices=["cdp"],
         default="cdp",
         help="Browser backend for URL/HTML rendering (default: cdp).",
     )
