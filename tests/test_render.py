@@ -7,8 +7,15 @@ to end rather than mocked.
 """
 
 import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
 from pixelrag_render import render_file
 
 
@@ -63,3 +70,89 @@ def test_page_taller_than_a_viewport_bounded_body_is_fully_tiled(tmp_path):
         "content below the fold was never measured"
     )
     assert len(tiles) > 1, f"expected multiple tiles, got {[t.name for t in tiles]}"
+
+
+def test_hanging_web_font_does_not_stall_render(tmp_path):
+    """A font request that never finishes must not block the CDP renderer."""
+    release_font = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/hanging.woff2":
+                self.send_response(200)
+                self.send_header("Content-Type", "font/woff2")
+                self.send_header("Content-Length", "1000000")
+                self.end_headers()
+                self.wfile.write(b"\0")
+                self.wfile.flush()
+                release_font.wait(timeout=60)
+                return
+
+            body = "".join(f"<p>line {i:03d}</p>" for i in range(200))
+            html = f"""<!doctype html>
+                <html><head><script>
+                window.addEventListener("load", () => {{
+                    const style = document.createElement("style");
+                    style.textContent = `@font-face {{
+                        font-family: HangingFont;
+                        src: url('/hanging.woff2') format('woff2');
+                    }} body {{ font-family: HangingFont; }}`;
+                    document.head.appendChild(style);
+                    document.fonts.load("16px HangingFont");
+                }});
+                </script></head><body>{body}</body></html>"""
+            payload = html.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    output = tmp_path / "tiles"
+    url = f"http://127.0.0.1:{server.server_port}/"
+    script = (
+        "from pixelrag_render import render_url; import sys; "
+        "render_url(sys.argv[1], sys.argv[2], tile_height=300, "
+        "viewport_width=400, workers=1, turbo=False)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, url, str(output)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                stdout, stderr = proc.communicate()
+            pytest.fail(
+                "render remained blocked by document.fonts.ready for 30 seconds\n"
+                f"stdout:\n{stdout[-2000:]}\nstderr:\n{stderr[-2000:]}"
+            )
+    finally:
+        release_font.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert proc.returncode == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    manifests = list(output.rglob("tiles.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    assert manifest["page_height"] > 300
+    assert len(manifest["tiles"]) > 1
