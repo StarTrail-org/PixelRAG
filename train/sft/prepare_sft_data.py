@@ -23,9 +23,45 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TypedDict
 
 from PIL import Image
 from tqdm import tqdm
+
+
+class ShareGPTMessage(TypedDict):
+    role: str
+    content: str
+
+
+class ShareGPTExample(TypedDict):
+    messages: list[ShareGPTMessage]
+    images: list[str]
+
+
+class ImageInfo(TypedDict):
+    src: str
+    dst: str
+    dst_rel: str
+
+
+class DatasetColumnMap(TypedDict):
+    messages: str
+    images: str
+
+
+class DatasetTagMap(TypedDict):
+    role_tag: str
+    content_tag: str
+    user_tag: str
+    assistant_tag: str
+
+
+class DatasetInfoEntry(TypedDict):
+    file_name: str
+    formatting: str
+    columns: DatasetColumnMap
+    tags: DatasetTagMap
 
 
 def compress_image(src: str, dst: str, scale_factor: float) -> bool:
@@ -45,7 +81,7 @@ def compress_image(src: str, dst: str, scale_factor: float) -> bool:
         return False
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dataset-dir",
@@ -107,7 +143,7 @@ def main():
         print(f"  Loaded {len(examples)} examples")
 
         # Collect unique positive image paths
-        unique_images = {}
+        unique_images: dict[str, ImageInfo] = {}
         for ex in examples:
             src_rel = ex["chunk_path"]  # e.g. images/shard_760/...
             src_abs = str(dataset_dir / src_rel)
@@ -155,7 +191,7 @@ def main():
             print("  All images already cached")
 
         # Build ShareGPT format
-        sharegpt_data = []
+        sharegpt_data: list[ShareGPTExample] = []
         skipped = 0
         for ex in examples:
             src_rel = ex["chunk_path"]
@@ -184,7 +220,7 @@ def main():
         )
 
     # Write dataset_info.json for LlamaFactory
-    dataset_info = {}
+    dataset_info: dict[str, DatasetInfoEntry] = {}
     for split_name in splits:
         out_json = output_dir / f"{split_name}.json"
         if out_json.exists():

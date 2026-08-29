@@ -21,7 +21,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 
-from .base import article_url, ArticleCapture, TileCapture
+from .base import ArticleCapture, TileCapture, article_url
 from .connection import WebsocketConnection, pick_page_ws_url
 
 TILE_HEIGHT = 8192

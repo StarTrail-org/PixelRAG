@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from functools import partial
 from pathlib import Path
 
@@ -243,7 +244,7 @@ def build_ivf(
 
     # Summary
     summary = {
-        "backend": "ivf",
+        "backend": "faiss",
         "total_vectors": n,
         "dimension": dim,
         "nlist": nlist,
@@ -261,6 +262,112 @@ def build_ivf(
         f"\nDone! Index: {index_size / 1e9:.1f} GB, metadata: {os.path.getsize(metadata_path) / 1e9:.1f} GB"
     )
     print(f"Summary: {summary_path}")
+
+
+def build_qdrant(
+    embeddings_dir: str,
+    output_dir: str,
+    url: str | None = None,
+    collection: str = "pixelrag",
+    api_key: str | None = None,
+    client_config: dict | None = None,
+    metric: str = "ip",
+    quantization_config: dict | None = None,
+    append: bool = False,
+    recreate: bool = False,
+    parallel: int = 1,
+    batch: int = 1000,
+):
+    from pydantic import TypeAdapter
+    from qdrant_client import QdrantClient, models
+
+    client_options = dict(client_config or {})
+    if url:
+        client_options["url"] = url
+    if api_key:
+        client_options["api_key"] = api_key
+    if not any(key in client_options for key in ("url", "host", "location", "path")):
+        raise SystemExit(
+            "Qdrant requires --qdrant-url or an endpoint in --qdrant-client-config"
+        )
+
+    client = QdrantClient(**client_options)
+    exists = client.collection_exists(collection)
+    if exists and not (append or recreate):
+        raise ValueError(
+            f"collection {collection!r} already exists. Use --append or --recreate"
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
+    merged = _merge_all_shards(_load_shards(embeddings_dir))
+    vectors = np.ascontiguousarray(merged["embeddings"], dtype=np.float32)
+    dim = merged["dim"]
+
+    distance = models.Distance.COSINE if metric == "ip" else models.Distance.EUCLID
+    quantization = (
+        TypeAdapter(models.QuantizationConfig).validate_python(quantization_config)
+        if quantization_config
+        else None
+    )
+    if recreate or not exists:
+        if exists:
+            client.delete_collection(collection)
+        client.create_collection(
+            collection,
+            vectors_config=models.VectorParams(
+                size=dim, distance=distance, on_disk=True
+            ),
+            quantization_config=quantization,
+        )
+
+    # min_tile_height is the only payload filter used during search.
+    client.create_payload_index(
+        collection, "tile_height", field_schema=models.PayloadSchemaType.INTEGER
+    )
+
+    fields = {
+        "article_id": merged["article_ids"],
+        "tile_index": merged["tile_indices"],
+        "chunk_index": merged["chunk_indices"],
+        "y_offset": merged["y_offsets"],
+        "tile_height": merged["tile_heights"],
+    }
+
+    # Qdrant only allows UUIDs and +ve integers as point IDs.
+    # Ref: https://qdrant.tech/documentation/manage-data/points/#point-ids
+    ids = (
+        str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{article_id}:{tile_index}:{chunk_index}"))
+        for article_id, tile_index, chunk_index in zip(
+            fields["article_id"], fields["tile_index"], fields["chunk_index"]
+        )
+    )
+    payloads = (
+        {name: int(values[i]) for name, values in fields.items()}
+        for i in range(len(vectors))
+    )
+
+    client.upload_collection(
+        collection_name=collection,
+        vectors=vectors,
+        payload=payloads,
+        ids=ids,
+        parallel=parallel,
+        batch_size=batch,
+        wait=True,
+    )
+
+    total = client.count(collection_name=collection, exact=True).count
+    summary = {
+        "backend": "qdrant",
+        "total_vectors": total,
+        "dimension": dim,
+        "metric": metric,
+        "collection": collection,
+    }
+    summary_path = os.path.join(output_dir, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"Uploaded {total:,} points to '{collection}'")
 
 
 def test_search(index_dir: str, nprobe: int = 128, k: int = 10):
@@ -306,7 +413,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     # build
-    p_build = sub.add_parser("build", help="Build IVF index (default)")
+    p_build = sub.add_parser("build", help="Build a vector index")
     p_build.add_argument("--embeddings-dir", default="./data/embeddings")
     p_build.add_argument("--output-dir", default="./output/search_index")
     p_build.add_argument(
@@ -336,6 +443,38 @@ def main():
         default=-1,
         help="GPU for K-means training (-1 = CPU only)",
     )
+    p_build.add_argument(
+        "--backend",
+        choices=["faiss", "qdrant"],
+        default="faiss",
+        help="Index backend (default: faiss)",
+    )
+    p_build.add_argument(
+        "--qdrant-url", default=None, help="Qdrant server/Cloud URL (qdrant backend)"
+    )
+    p_build.add_argument("--qdrant-api-key", default=os.environ.get("QDRANT_API_KEY"))
+    p_build.add_argument(
+        "--qdrant-client-config",
+        help="Path to a JSON object of QdrantClient constructor arguments",
+    )
+    p_build.add_argument(
+        "--collection", default="pixelrag", help="Qdrant collection name"
+    )
+    p_build.add_argument(
+        "--qdrant-quantization-config",
+        help="Qdrant quantization_config JSON for a new or recreated collection",
+    )
+    qdrant_mode = p_build.add_mutually_exclusive_group()
+    qdrant_mode.add_argument(
+        "--append",
+        action="store_true",
+        help="Upsert into an existing Qdrant collection",
+    )
+    qdrant_mode.add_argument(
+        "--recreate",
+        action="store_true",
+        help="Delete and recreate an existing Qdrant collection",
+    )
 
     # test
     p_test = sub.add_parser("test", help="Test search on built index")
@@ -346,15 +485,37 @@ def main():
     args = parser.parse_args()
 
     if args.command == "build":
-        build_ivf(
-            args.embeddings_dir,
-            args.output_dir,
-            nlist=args.nlist,
-            nprobe=args.nprobe,
-            train_sample=args.train_sample,
-            metric=args.metric,
-            gpu_id=args.gpu_id,
-        )
+        if args.backend == "qdrant":
+            client_config = None
+            if args.qdrant_client_config:
+                with open(args.qdrant_client_config) as f:
+                    client_config = json.load(f)
+            quantization_config = None
+            if args.qdrant_quantization_config:
+                with open(args.qdrant_quantization_config) as f:
+                    quantization_config = json.load(f)
+            build_qdrant(
+                args.embeddings_dir,
+                args.output_dir,
+                url=args.qdrant_url,
+                collection=args.collection,
+                api_key=args.qdrant_api_key,
+                client_config=client_config,
+                metric=args.metric,
+                quantization_config=quantization_config,
+                append=args.append,
+                recreate=args.recreate,
+            )
+        else:
+            build_ivf(
+                args.embeddings_dir,
+                args.output_dir,
+                nlist=args.nlist,
+                nprobe=args.nprobe,
+                train_sample=args.train_sample,
+                metric=args.metric,
+                gpu_id=args.gpu_id,
+            )
     elif args.command == "test":
         test_search(args.index_dir, nprobe=args.nprobe, k=args.k)
 

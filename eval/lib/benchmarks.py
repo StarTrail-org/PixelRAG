@@ -1,8 +1,8 @@
 """
 Dataset loading functions for visual/multimodal QA benchmarks.
 
-Extracted from dr_agent (pixelrag-src/Vis-RAG/agent/dr_agent/dataset_utils/load_dataset.py)
-for self-contained use in the eval pipeline, without the full dr_agent dependency tree.
+Standalone dataset loaders for the eval pipeline (SimpleQA, NQ, NQ-Tables, EVQA,
+MMSearch, WorldVQA, ...), with no external dependencies.
 """
 
 import base64
@@ -50,7 +50,7 @@ DATASET_URLS = {
 
 def get_cache_dir() -> Path:
     """Get the cache directory for downloaded datasets."""
-    cache_dir = Path.home() / ".cache" / "dr_agent" / "datasets"
+    cache_dir = Path.home() / ".cache" / "pixelrag_eval" / "datasets"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -154,11 +154,11 @@ def load_encyclopedic_vqa_data(
                 example[col] = row[col]
 
         # Map wikipedia_url into metadata so screenshot/retrieval pipeline can find it
-        if "wikipedia_url" in example and example["wikipedia_url"]:
+        if example.get("wikipedia_url"):
             example["metadata"] = {"url": example["wikipedia_url"]}
 
         # Parse dataset_image_ids for query images (iNaturalist or Google Landmarks)
-        if "dataset_image_ids" in example and example["dataset_image_ids"]:
+        if example.get("dataset_image_ids"):
             raw_ids = str(example["dataset_image_ids"])
             ids = [i.strip() for i in raw_ids.split("|") if i.strip()]
             example["dataset_image_ids_parsed"] = ids
@@ -590,7 +590,7 @@ def load_multimodalqa_data(
     the dev split questions from HuggingFace (community mirror) or falls back to
     downloading from the official GitHub release. Images are NOT loaded automatically;
     the `image` field will be None unless the images are pre-downloaded to
-    ~/.cache/dr_agent/datasets/multimodalqa_images/.
+    ~/.cache/pixelrag_eval/datasets/multimodalqa_images/.
 
     If no HuggingFace mirror is available, we download the dev JSONL directly from GitHub.
 

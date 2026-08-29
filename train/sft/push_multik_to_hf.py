@@ -71,7 +71,12 @@ KEEP_FILES = {
 }
 
 
-def build_readme(comp, adapter_dir, cutoff, scores):
+def build_readme(
+    comp: str,
+    adapter_dir: str,
+    cutoff: int,
+    scores: tuple[float, float, float, float],
+) -> str:
     n_ratio = int(comp.rstrip("x"))
     sk1, sk2, sk3, sk4 = scores
 
@@ -181,7 +186,12 @@ messages = [{{"role": "user", "content": [
 """
 
 
-def push_one(comp, adapter_dir, cutoff, scores):
+def push_one(
+    comp: str,
+    adapter_dir: str,
+    cutoff: int,
+    scores: tuple[float, float, float, float],
+) -> None:
     src = Path(adapter_dir)
     assert src.exists(), f"missing {src}"
 
@@ -213,7 +223,7 @@ def push_one(comp, adapter_dir, cutoff, scores):
         print(f"  uploaded → https://huggingface.co/{repo_id}")
 
 
-def main():
+def main() -> None:
     for args in BEST:
         push_one(*args)
     print("\nAll done.")

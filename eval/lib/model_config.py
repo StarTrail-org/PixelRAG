@@ -6,6 +6,11 @@ This module provides model configurations to keep run_naive_simpleqa.py clean.
 import os
 from typing import Dict, Optional
 
+MINIMAX_MODELS = {
+    "minimax-m3": "MiniMax-M3",
+    "minimax-m2.7": "MiniMax-M2.7",
+}
+
 
 def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
     """
@@ -18,6 +23,15 @@ def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
         Dictionary with 'api_base', 'api_key', and 'model' keys.
     """
     model_lower = model_name.lower()
+
+    # MiniMax models (OpenAI-compatible API)
+    minimax_model = MINIMAX_MODELS.get(model_lower.rsplit("/", 1)[-1])
+    if minimax_model:
+        return {
+            "api_base": os.getenv("MINIMAX_API_BASE", "https://api.minimax.io/v1"),
+            "api_key": os.getenv("MINIMAX_API_KEY", os.getenv("API_KEY", "dummy")),
+            "model": minimax_model,
+        }
 
     # Gemini models
     if "gemini" in model_lower:

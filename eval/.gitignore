@@ -1,0 +1,6 @@
+# Eval run artifacts — local only
+*.jsonl
+*.json
+*.db
+*_out/
+eval_output/

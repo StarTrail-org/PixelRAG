@@ -68,7 +68,7 @@ import requests
 
 # Add eval root to path so simpleqa imports work
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.llm import LLMClient  # noqa: E402
+from lib.llm import LLMClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,7 +85,7 @@ NEWS_TILES_DIR = "/opt/dlami/nvme/news_tiles"
 LIVEVQA_IMAGES_DIR = "/opt/dlami/nvme/livevqa"
 
 # Default v4 JSON (canonical LiveVQA dataset with question/options/GT/img_path)
-# LiveVQA dataset (question/options/GT/img_path). External data input — see REPRODUCE.md.
+# LiveVQA dataset (question/options/GT/img_path). External data input — see README.md.
 # Override with --v4-path. Retrieval is re-done live; only the QA fields are read from here.
 DEFAULT_V4_PATH = os.environ.get(
     "LIVEVQA_V4_PATH", "/mnt/data/yichuan/livevqa_v4_multimodal.json"
@@ -498,7 +498,7 @@ def resolve_text_context(
     passages: list[str] = []
 
     for it in retrieved_items[:top_k]:
-        if "text" in it and it["text"]:
+        if it.get("text"):
             passages.append(it["text"])
         elif chunks_db and hex_to_int:
             # Cross-format: pixel retrieval item, fetch text from DB
@@ -670,7 +670,7 @@ async def evaluate_one(
 
                 chunks: list[str] = []
                 for it in t_items[: args.top_k]:
-                    if "text" in it and it["text"]:
+                    if it.get("text"):
                         chunks.append(it["text"])
 
                 if not tile_paths and not chunks:

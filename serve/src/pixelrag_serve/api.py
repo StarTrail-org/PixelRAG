@@ -32,6 +32,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import base64
 import contextvars
 import functools
@@ -40,17 +41,18 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
-import faiss
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 _request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "request_id",
@@ -81,13 +83,42 @@ class _RequestIDFilter(logging.Filter):
         return True
 
 
-logging.getLogger().addFilter(_RequestIDFilter())
-
 logger = logging.getLogger("search_api")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: [%(req)s] %(message)s",
 )
+for handler in logging.getLogger().handlers:
+    handler.addFilter(_RequestIDFilter())
+
+_query_log_lock = threading.Lock()
+_query_log_path: Path | None = None
+
+
+def _init_query_log():
+    global _query_log_path
+    log_dir = Path(os.environ.get("PIXELRAG_QUERY_LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _query_log_path = log_dir / "queries.jsonl"
+
+
+def _log_query(req: "SearchRequest", request_id: str, source: str | None = None):
+    if _query_log_path is None:
+        return
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "source": source,
+        "queries": [q.text for q in req.queries],
+        "has_image": [q.image is not None for q in req.queries],
+        "n_docs": req.n_docs,
+        "department": req.department,
+    }
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with _query_log_lock:
+        with open(_query_log_path, "a") as f:
+            f.write(line)
+
 
 app = FastAPI(title="PixelRAG Search API")
 
@@ -141,12 +172,19 @@ class Query(BaseModel):
 
 class SearchRequest(BaseModel):
     queries: list[Query]
-    n_docs: int = 10
+    # Bounded: fetch_k = n_docs * 10 feeds FAISS search k, so an unbounded value
+    # is a trivial OOM/DoS on the public endpoint. Largest real caller uses 10.
+    n_docs: int = Field(default=10, ge=1, le=1000)
     nprobe: int | None = None  # override default nprobe
     min_tile_height: int | None = None  # filter out small/blank chunks
     instruction: str | None = None  # override query embedding instruction
     include_images: bool = False  # return base64-encoded tile images
     articles_only: bool = False  # drop Wikipedia meta pages (Portal:, List_of_, …)
+    # Restrict search to one department (articles.json "department" field, set by
+    # `pixelrag index build` from the source directory layout). Pre-filters inside
+    # FAISS via an IDSelector — not a post-filter, so n_docs results are guaranteed
+    # when the department has enough tiles.
+    department: str | None = None
 
 
 # Wikipedia meta/aggregator pages that pollute "find the article" results.
@@ -165,9 +203,33 @@ def _is_meta(url: str) -> bool:
     return bool(_META_RE.search(url))
 
 
+def _department_article_ids(department: str) -> np.ndarray:
+    """Article ids belonging to a department (articles.json "department" field).
+
+    Backend-agnostic: the ids are handed to VectorBackend.raw_search, which
+    turns them into its native pre-filter (FAISS: IDSelector over vector rows;
+    Qdrant: payload filter on article_id).
+    """
+    dept_to_aids = _state.get("dept_to_aids") or {}
+    if not dept_to_aids:
+        raise HTTPException(
+            status_code=400,
+            detail="Index was built without department metadata; rebuild with "
+            "`pixelrag index build` from a directory-per-department source.",
+        )
+    aids = dept_to_aids.get(department)
+    if aids is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown department {department!r}. "
+            f"Available: {sorted(dept_to_aids)}",
+        )
+    return aids
+
+
 class Hit(BaseModel):
     score: float
-    vector_id: int
+    vector_id: int | str
     article_id: int
     tile_index: int
     chunk_index: int
@@ -339,6 +401,12 @@ def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
     if os.path.exists(flat_path):
         return flat_path
 
+    # PDF pipeline stores whole pages as tile_XXXX.jpg (one chunk per page,
+    # no materialized chunk files) — fall back to the page image.
+    page_path = os.path.join(tiles_dir, tiles_dirname, f"tile_{tile_index:04d}.jpg")
+    if os.path.exists(page_path):
+        return page_path
+
     # Sharded layout: tiles_dir/shard_XXX/sub/{article_id}.png.tiles/chunk_XXXX_YY.png
     top_shard = article_id // shard_size
     top_shard_dir = os.path.join(tiles_dir, f"shard_{top_shard:03d}")
@@ -396,7 +464,7 @@ def _resolve_url(article_id: int) -> str:
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search(req: SearchRequest):
+async def search(req: SearchRequest, request: Request):
     t0 = time.time()
 
     # Encode queries
@@ -411,11 +479,9 @@ async def search(req: SearchRequest):
         query_vectors = _encode_queries(req.queries, req.instruction)
     t_encode = time.time() - t0
 
-    # FAISS search
-    index = _state["index"]
-    default_nprobe = index.nprobe
-    if req.nprobe is not None:
-        index.nprobe = req.nprobe
+    # Search through the configured backend.
+    backend = _state["backend"]
+    backend.set_nprobe(req.nprobe)
 
     # Over-fetch when filtering to ensure enough results after filtering.
     # Meta pages can be the majority of raw hits, so articles_only needs more.
@@ -425,44 +491,52 @@ async def search(req: SearchRequest):
         fetch_k = req.n_docs * 5
     else:
         fetch_k = req.n_docs
-    distances, indices = index.search(query_vectors, fetch_k)
-
-    if req.nprobe is not None:
-        index.nprobe = default_nprobe
+    article_filter = None
+    if req.department:
+        # Department pre-filter: the backend scores only that department's
+        # vectors (FAISS: IDSelector; Qdrant: payload filter) — a real
+        # pre-filter, not post-filtering, so n_docs results are guaranteed
+        # when the department has enough tiles.
+        article_filter = _department_article_ids(req.department)
+    try:
+        raw = backend.raw_search(
+            query_vectors,
+            fetch_k,
+            min_tile_height=req.min_tile_height,
+            article_ids=article_filter,
+            filter_cache_key=f"dept:{req.department}" if req.department else None,
+        )
+    finally:
+        backend.reset_nprobe()
     t_search = time.time() - t0 - t_encode
 
     # Build results
-    meta = _state["metadata"]
-    article_ids = meta["article_ids"]
-    tile_indices = meta["tile_indices"]
-    chunk_indices = meta["chunk_indices"]
-    y_offsets = meta["y_offsets"]
-    tile_heights = meta["tile_heights"]
     tiles_dir = _state.get("tiles_dir", "")
 
     results = []
     for qi in range(len(req.queries)):
         hits = []
-        for j in range(fetch_k):
-            vid = int(indices[qi, j])
-            if vid == -1:
-                continue
-            th = int(tile_heights[vid])
+        for r in raw[qi]:
+            vid = r["vector_id"]
+            th = r["tile_height"]
             if req.min_tile_height and th < req.min_tile_height:
                 continue
-            aid = int(article_ids[vid])
+            aid = r["article_id"]
             url = _resolve_url(aid)
             if req.articles_only and _is_meta(url):
                 continue
-            ti = int(tile_indices[vid])
-            ci = int(chunk_indices[vid])
+            ti = r["tile_index"]
+            ci = r["chunk_index"]
             tile_path = _resolve_path(aid, ti, ci)
             img_b64 = None
             if req.include_images and tile_path and os.path.exists(tile_path):
                 with open(tile_path, "rb") as fp:
                     img_b64 = base64.b64encode(fp.read()).decode()
             elif req.include_images and _state.get("ondemand") is not None:
-                img_b64 = _ondemand_chunk_b64(aid, ti, ci, th)
+                # Render off the event loop: _ondemand_chunk_b64 -> render_url uses
+                # asyncio.run(), which raises "cannot be called from a running event
+                # loop" if invoked directly here. Offload to a worker thread.
+                img_b64 = await asyncio.to_thread(_ondemand_chunk_b64, aid, ti, ci, th)
             # Expose a relative tile path, not the absolute server filesystem
             # path (avoids leaking the host's directory layout; clients fetch
             # tiles via /tile/{article_id}/{tile_index}/{chunk_index}).
@@ -473,12 +547,12 @@ async def search(req: SearchRequest):
                     rel_path = candidate
             hits.append(
                 Hit(
-                    score=float(distances[qi, j]),
+                    score=r["score"],
                     vector_id=vid,
                     article_id=aid,
                     tile_index=ti,
                     chunk_index=ci,
-                    y_offset=int(y_offsets[vid]),
+                    y_offset=r["y_offset"],
                     tile_height=th,
                     path=rel_path,
                     url=url,
@@ -499,17 +573,19 @@ async def search(req: SearchRequest):
         time.time() - t0,
     )
 
+    _log_query(req, _request_id_ctx.get(), request.headers.get("X-Source"))
+
     return SearchResponse(results=results)
 
 
 @app.get("/status", response_model=StatusResponse)
 async def status():
-    index = _state["index"]
+    backend = _state["backend"]
     return StatusResponse(
-        total_vectors=index.ntotal,
+        total_vectors=backend.ntotal,
         dimension=_state["dimension"],
-        nlist=_state["nlist"],
-        nprobe=index.nprobe,
+        nlist=backend.nlist,
+        nprobe=backend.nprobe,
         model=_state["model_name"],
         index_dir=_state.get("index_dir", ""),
         tiles_dir=_state.get("tiles_dir", ""),
@@ -524,22 +600,26 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/departments")
+async def departments():
+    """Departments available for the `department` search filter, with doc counts."""
+    dept_to_aids = _state.get("dept_to_aids") or {}
+    return {
+        "departments": [
+            {"name": d, "n_documents": len(aids)}
+            for d, aids in sorted(dept_to_aids.items())
+        ]
+    }
+
+
 class ReconstructRequest(BaseModel):
-    vector_ids: list[int]
+    vector_ids: list[int | str]
 
 
 @app.post("/reconstruct")
 async def reconstruct(req: ReconstructRequest):
     """Reconstruct stored embeddings by vector_id (for alignment debugging)."""
-    index = _state["index"]
-    # Ensure direct map exists for reconstruct
-    if not hasattr(index, "_direct_map_built"):
-        index.make_direct_map()
-        index._direct_map_built = True
-    vecs = []
-    for vid in req.vector_ids:
-        vecs.append(index.reconstruct(vid).tolist())
-    return {"embeddings": vecs}
+    return {"embeddings": _state["backend"].reconstruct(req.vector_ids)}
 
 
 @app.get("/tile")
@@ -560,7 +640,8 @@ async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
     path = _resolve_path(article_id, tile_index, chunk_index)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Tile not found")
-    return FileResponse(path, media_type="image/png")
+    media_type = "image/jpeg" if path.endswith((".jpg", ".jpeg")) else "image/png"
+    return FileResponse(path, media_type=media_type)
 
 
 # ---------------------------------------------------------------------------
@@ -570,35 +651,50 @@ async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
 
 def load(args):
     """Load index, metadata, model, and articles.json."""
+    _init_query_log()
     import torch
 
     device = args.device
     dtype = torch.float32 if device == "cpu" else torch.bfloat16
 
-    # Load FAISS index
-    index_path = os.path.join(args.index_dir, "index.faiss")
-    logger.info("Loading FAISS index from %s...", index_path)
-    t0 = time.time()
-    index = faiss.read_index(index_path)
-    logger.info("Loaded index: %d vectors in %.1fs", index.ntotal, time.time() - t0)
-
-    # Load metadata
-    metadata_path = os.path.join(args.index_dir, "metadata.npz")
-    logger.info("Loading metadata from %s...", metadata_path)
-    meta = np.load(metadata_path)
-
-    # Load summary
+    # Load summary (index loading itself lives in the backend: FaissBackend
+    # honors PIXELRAG_INDEX_MMAP for memory-mapped multi-100G indexes).
     summary_path = os.path.join(args.index_dir, "summary.json")
     summary = {}
     if os.path.exists(summary_path):
         with open(summary_path) as f:
             summary = json.load(f)
 
+    from .backends import make_backend
+
+    t0 = time.time()
+    backend = make_backend(args, summary)
+    logger.info(
+        "Loaded %s backend: %d vectors in %.1fs",
+        backend.name,
+        backend.ntotal,
+        time.time() - t0,
+    )
+
     # Load articles.json
     logger.info("Loading articles.json from %s...", args.articles_json)
     with open(args.articles_json) as f:
         articles = json.load(f)
     logger.info("Loaded %d article slugs", len(articles))
+
+    # Department → article ids, for the `department` search filter. Older
+    # indexes (or web/kiwix sources) have no "department" key — the map stays
+    # empty and filtered requests get a clear 400.
+    dept_to_aids: dict[str, list[int]] = {}
+    for aid, a in enumerate(articles):
+        dept = a.get("department", "") if isinstance(a, dict) else ""
+        if dept:
+            dept_to_aids.setdefault(dept, []).append(aid)
+    if dept_to_aids:
+        logger.info(
+            "Departments: %s",
+            ", ".join(f"{d}({len(v)})" for d, v in sorted(dept_to_aids.items())),
+        )
 
     # Load embedding model
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
@@ -621,27 +717,33 @@ def load(args):
     model = model.to(device).eval()
     logger.info("Model loaded")
 
-    # File sizes
-    index_size = os.path.getsize(index_path)
-    meta_size = os.path.getsize(metadata_path)
-
-    # Index build time from file mtime
-    index_mtime = os.path.getmtime(index_path)
-    index_built_at = datetime.fromtimestamp(index_mtime, tz=timezone.utc).isoformat()
+    index_path = os.path.join(args.index_dir, "index.faiss")
+    metadata_path = os.path.join(args.index_dir, "metadata.npz")
+    if os.path.exists(index_path):
+        index_size = os.path.getsize(index_path)
+        index_built_at = datetime.fromtimestamp(
+            os.path.getmtime(index_path), tz=timezone.utc
+        ).isoformat()
+    else:
+        index_size = 0
+        built_path = summary_path if os.path.exists(summary_path) else args.index_dir
+        index_built_at = datetime.fromtimestamp(
+            os.path.getmtime(built_path), tz=timezone.utc
+        ).isoformat()
+    meta_size = os.path.getsize(metadata_path) if os.path.exists(metadata_path) else 0
 
     _state.update(
         {
-            "index": index,
-            "metadata": meta,
+            "backend": backend,
             "articles": articles,
+            "dept_to_aids": {d: np.asarray(v) for d, v in dept_to_aids.items()},
             "processor": processor,
             "model": model,
             "device": device,
             "model_name": args.model,
             "index_dir": args.index_dir,
             "tiles_dir": args.tiles_dir,
-            "dimension": summary.get("dimension", index.d),
-            "nlist": summary.get("nlist", 4096),
+            "dimension": backend.dimension,
             "index_built_at": index_built_at,
             "index_size_bytes": index_size,
             "metadata_size_bytes": meta_size,
@@ -723,12 +825,35 @@ def main():
         "--articles-json",
         default=os.environ.get("PIXELRAG_ARTICLES_JSON", "./articles.json"),
     )
+    parser.add_argument(
+        "--backend",
+        choices=["faiss", "qdrant"],
+        default=None,
+        help="Vector backend (default: read from index summary.json, else faiss)",
+    )
+    parser.add_argument(
+        "--qdrant-url", default=None, help="Qdrant server/Cloud URL (qdrant backend)"
+    )
+    parser.add_argument(
+        "--qdrant-api-key",
+        default=os.environ.get("QDRANT_API_KEY"),
+        help="Qdrant API key",
+    )
+    parser.add_argument(
+        "--qdrant-client-config",
+        help="Path to a JSON object of QdrantClient constructor arguments",
+    )
+    parser.add_argument(
+        "--collection",
+        default=None,
+        help="Qdrant collection name (default: from summary.json, else 'pixelrag')",
+    )
     parser.add_argument("--model", default="Qwen/Qwen3-VL-Embedding-2B")
     parser.add_argument(
         "--device",
-        choices=["cpu", "cuda"],
+        choices=["cpu", "cuda", "mps"],
         default="cpu",
-        help="Device to run inference on: cpu (default) or cuda",
+        help="Device to run inference on: cpu (default), cuda, or mps",
     )
     parser.add_argument(
         "--peft-adapter",
@@ -754,6 +879,9 @@ def main():
         help="kiwix book id for /content/<book>/ (auto-derived from --kiwix-url if omitted)",
     )
     args = parser.parse_args()
+    if args.qdrant_client_config:
+        with open(args.qdrant_client_config) as f:
+            args.qdrant_client_config = json.load(f)
 
     load(args)
 

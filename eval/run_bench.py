@@ -38,39 +38,42 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from lib import (
+    LLMClient,
+    build_messages,
+    build_react_messages,
+    encode_screenshot,
+    extract_url_from_metadata,
+    load_arc_data,
+    load_commonsenseqa_data,
+    load_hellaswag_data,
+    load_nq_data,
+    load_nq_tables_data,
+    load_openbookqa_data,
+    load_piqa_data,
     # Data
     load_simpleqa_wikipedia,
-    extract_url_from_metadata,
-    encode_screenshot,
-    make_compressed_encoder,
-    load_nq_data,
     load_triviaqa_data,
-    load_nq_tables_data,
-    load_piqa_data,
-    load_hellaswag_data,
-    load_commonsenseqa_data,
-    load_openbookqa_data,
-    load_arc_data,
+    make_compressed_encoder,
 )
-from lib import LLMClient, build_messages, build_react_messages
-from lib.model_config import get_model_config, get_output_filename
-from lib.retrieval import (
-    _get_query_image_path_for_example,
-    _save_worldvqa_query_image,
-    _save_task_query_image,
+from lib.benchmarks import (
+    SUPPORTED_TASKS as DATASET_REPOS,
 )
 from lib.benchmarks import (
     load_encyclopedic_vqa_data,
-    load_shortformqa_data,
-    load_worldvqa_data,
-    load_simplevqa_data,
     load_factualvqa_data,
     load_mmsearch_data,
-    load_webqa_data,
     load_multimodalqa_data,
-    SUPPORTED_TASKS as DATASET_REPOS,
+    load_shortformqa_data,
+    load_simplevqa_data,
+    load_webqa_data,
+    load_worldvqa_data,
 )
-
+from lib.model_config import get_model_config, get_output_filename
+from lib.retrieval import (
+    _get_query_image_path_for_example,
+    _save_task_query_image,
+    _save_worldvqa_query_image,
+)
 
 _DEFAULT_SPLIT_FOR_TASK = {
     "simpleqa": "test",
@@ -106,13 +109,12 @@ def _fetch_status(api_url: str | None, timeout: float = 5.0) -> dict | None:
     import urllib.request
 
     base = api_url.rstrip("/")
-    if base.endswith("/search"):
-        base = base[: -len("/search")]
+    base = base.removesuffix("/search")
     status_url = base + "/status"
     try:
         with urllib.request.urlopen(status_url, timeout=timeout) as r:
             return json.loads(r.read().decode())
-    except Exception as e:  # noqa: BLE001 — best-effort capture
+    except Exception as e:
         return {"_error": f"{type(e).__name__}: {e}", "url": status_url}
 
 
@@ -168,7 +170,7 @@ def _build_run_metadata(args, n_loaded: int) -> dict:
             .decode()
             .strip()
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         meta["git_commit"] = None
     return meta
 
@@ -983,7 +985,7 @@ async def run_async(args):
             if args.api_base
             else (model_config["api_base"] or "http://localhost:8000/v1")
         )
-        api_key = args.api_key if args.api_key else model_config["api_key"]
+        api_key = args.api_key if args.api_key else (model_config["api_key"] or "dummy")
         model = model_config["model"]
 
     # Generate output filename with model name if output is not explicitly set
@@ -991,8 +993,6 @@ async def run_async(args):
         # Determine mode for filename
         if args.url_screenshot:
             mode_str = "screenshot"
-        elif args.url_tiled_screenshot and args.local_wiki:
-            mode_str = "tiled_screenshot_localwiki"
         elif args.url_tiled_screenshot:
             mode_str = "tiled_screenshot"
         elif args.url_text:
@@ -1007,8 +1007,6 @@ async def run_async(args):
                 mode_str = "tiled_vector_colqwen"
             elif args.use_qwen3vl_embedding:
                 mode_str = "tiled_vector_qwen3vl_embedding"
-                if args.local_wiki:
-                    mode_str += "_localwiki"
                 if args.task == "encyclopedic_vqa":
                     if args.evqa_multimodal_query:
                         if args.evqa_multimodal_query_text_only:
@@ -1303,9 +1301,18 @@ def main():
 
     # API args
     parser.add_argument(
-        "--api-base", type=str, default="http://localhost:8000/v1", help="API base URL"
+        "--api-base",
+        type=str,
+        default=None,
+        help="API base URL (default: the model config's endpoint, "
+        "else http://localhost:8000/v1)",
     )
-    parser.add_argument("--api-key", type=str, default="dummy", help="API key")
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key (default: the model config's key, else 'dummy')",
+    )
     parser.add_argument(
         "--open-router",
         action="store_true",
@@ -1321,8 +1328,8 @@ def main():
     parser.add_argument(
         "--num-examples",
         type=int,
-        default=1000,
-        help="Number of examples (default: 1000 Wikipedia samples)",
+        default=None,
+        help="Number of examples to run (default: the whole filtered set)",
     )
     parser.add_argument(
         "--verified",
@@ -1439,8 +1446,8 @@ def main():
     parser.add_argument(
         "--jina-api-key",
         type=str,
-        default="jina_de9725ba5457460a9e5b0f89548e6657UN5YStvS5ingpklvVohWgOMiYRxn",
-        help="Jina API key",
+        default=os.environ.get("JINA_API_KEY"),
+        help="Jina API key (defaults to the JINA_API_KEY env var)",
     )
     parser.add_argument(
         "--retrieval-cache", type=str, default=None, help="Embedding cache file"
@@ -1582,20 +1589,6 @@ def main():
         help="Directory to store rendered pixel query images (default: pixel_queries)",
     )
 
-    # Local wiki-screenshot tiles (pre-rendered, from local kiwix tile store)
-    parser.add_argument(
-        "--local-wiki",
-        action="store_true",
-        help="Use pre-rendered Wikipedia tiles from local kiwix tile store instead of Selenium.",
-    )
-    parser.add_argument(
-        "--local-wiki-screenshot-dir",
-        type=str,
-        default=None,
-        help="Directory to store raw local-wiki tile downloads (default: screenshots-localwiki). "
-        "Keeps local-wiki cache separate from regular screenshots.",
-    )
-
     parser.add_argument(
         "--prebuilt-tiles-dir",
         type=str,
@@ -1692,12 +1685,6 @@ def main():
         help="Path to a JSON list of few-shot demos, each {'question','image_path','answer'}. "
         "When set, build_messages prepends (Example N, image, Q+A) blocks to every "
         "reader user-message. Works across pixel / text / naive modes.",
-    )
-    parser.add_argument(
-        "--lookup-reference-url",
-        action="store_true",
-        help="For local-api mode: also look up the ground-truth reference URL in kiwix "
-        "and append its tiles to the API search results (deduplicated by article ID).",
     )
     parser.add_argument(
         "--reranker",
@@ -1925,20 +1912,11 @@ def main():
     # Set default tiles-dir and screenshot-dir for EVQA (use cached paths)
     if args.task == "encyclopedic_vqa":
         if args.tiles_dir is None:
-            args.tiles_dir = "tiles/evqa_localwiki" if args.local_wiki else "tiles/evqa"
+            args.tiles_dir = "tiles/evqa"
         if args.use_tiled_retrieval and args.screenshot_dir == "screenshots":
-            args.screenshot_dir = (
-                "screenshots/evqa_localwiki" if args.local_wiki else "screenshots/evqa"
-            )
+            args.screenshot_dir = "screenshots/evqa"
     elif args.tiles_dir is None:
-        if args.local_wiki:
-            args.tiles_dir = f"tiles-local-wiki-h{args.tile_height}"
-        else:
-            args.tiles_dir = f"tiles-1024x{args.tile_height}"
-
-    # Default local-wiki screenshot dir
-    if args.local_wiki and args.local_wiki_screenshot_dir is None:
-        args.local_wiki_screenshot_dir = "screenshots-localwiki"
+        args.tiles_dir = f"tiles-1024x{args.tile_height}"
 
     # Auto-calculate max_context_chars if not set
     if args.max_context_chars is None:

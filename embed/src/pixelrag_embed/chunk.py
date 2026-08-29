@@ -36,6 +36,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from PIL import Image
+from tqdm import tqdm
 
 Image.MAX_IMAGE_PIXELS = None  # some tiles exceed default 178M pixel limit
 
@@ -84,7 +85,13 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
         raw = f.read().strip()
     if not raw:
         return None
-    meta = json.loads(raw)
+    try:
+        meta = json.loads(raw)
+    except json.JSONDecodeError:
+        # A truncated manifest (crash mid-write) must not take down the whole
+        # shard/build — skip this article like other unreadable dirs.
+        logger.warning("Corrupt tiles.json in %s — skipping", article_dir)
+        return None
 
     tile_names = meta.get("tiles", [])
     if not tile_names:
@@ -127,6 +134,7 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
     page_height = meta.get("page_height", 0)
     viewport_width = meta.get("viewport_width", 875)
     tile_height = meta.get("tile_height", 8192)
+    article_id = meta.get("article_id")  # propagate from tiles.json into chunks.json
 
     chunks_info = []  # list of {tile, chunk_index, file, y_offset, height}
     files_written = 0
@@ -229,6 +237,8 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
         "tile_hashes": tile_hashes,
         "chunks": chunks_info,
     }
+    if article_id is not None:
+        manifest["article_id"] = article_id
 
     if not dry_run:
         with open(chunks_json, "w") as f:
@@ -283,6 +293,7 @@ def process_shard(
     dry_run: bool = False,
     force: bool = False,
     delete_tiles: bool = False,
+    progress: bool = True,
 ) -> dict:
     """Chunk all articles in a shard directory."""
     t0 = time.time()
@@ -304,21 +315,28 @@ def process_shard(
         # Flat structure — article dirs directly in shard_dir
         sub_dirs = [Path(shard_dir)]
 
-    for sub_dir in sub_dirs:
-        for article_dir in sorted(sub_dir.iterdir()):
-            if not article_dir.is_dir() or not article_dir.name.endswith(".png.tiles"):
-                continue
-            total_articles += 1
+    all_article_dirs = [
+        article_dir
+        for sub_dir in sub_dirs
+        for article_dir in sorted(sub_dir.iterdir())
+        if article_dir.is_dir() and article_dir.name.endswith(".png.tiles")
+    ]
 
-            result = chunk_article(str(article_dir), dry_run=dry_run, force=force)
-            if result is None:
-                skipped_articles += 1
-                continue
+    # The bar is disabled when this runs inside a ProcessPoolExecutor worker
+    # (--tiles-dir mode): up to 96 concurrent bars would trample each other
+    # on one terminal. The parent shows a shard-level bar instead.
+    for article_dir in tqdm(all_article_dirs, desc="Chunking", disable=not progress):
+        total_articles += 1
 
-            chunked_articles += 1
-            total_tiles += result["num_tiles"]
-            total_chunks += result["num_chunks"]
-            total_files += result["files_written"]
+        result = chunk_article(str(article_dir), dry_run=dry_run, force=force)
+        if result is None:
+            skipped_articles += 1
+            continue
+
+        chunked_articles += 1
+        total_tiles += result["num_tiles"]
+        total_chunks += result["num_chunks"]
+        total_files += result["files_written"]
 
     # Delete tiles after chunking the whole shard
     tiles_deleted = 0
@@ -413,11 +431,18 @@ def main():
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(
-                process_shard, sd, args.dry_run, args.force, args.delete_tiles
+                process_shard,
+                sd,
+                args.dry_run,
+                args.force,
+                args.delete_tiles,
+                progress=False,
             ): sd
             for sd in shard_dirs
         }
-        for fut in as_completed(futures):
+        for fut in tqdm(
+            as_completed(futures), total=len(futures), desc="Chunking shards"
+        ):
             sd = futures[fut]
             try:
                 r = fut.result()

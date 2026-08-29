@@ -36,8 +36,38 @@ index or model with zero downtime:
    with a graceful reload (no dropped connections), and repoints + restarts the agent.
 3. **Rollback** = `deploy/api-switch.sh <other-port>`.
 
+`api-switch.sh` moves **this host** — its nginx upstream and the agent. If public
+traffic reaches the host through something in front of it (a relay, reverse proxy
+or tunnel endpoint), that layer picks the slot for public requests and the script
+does not touch it: the switch then completes locally, reports success, and public
+traffic keeps hitting the old slot. Point `PIXELRAG_INGRESS_SWITCH_HOOK` at a
+script that moves that layer too — it receives the chosen port and must exit 0,
+and a non-zero exit fails the switch rather than leaving the two halves disagreeing.
+
+Whichever way you switch, verify the **public** endpoint afterwards. A local
+health check passes in exactly the case this warning is about.
+
 This is preferred over restarting a slot in place, which reloads the (large) FAISS index and would
 mean minutes of downtime.
+
+**Enable the slot you switch to.** `systemctl start` on a slot survives until the next reboot and
+no further — a slot that is running but not enabled comes back as a 502 the first time the box
+restarts, long after whoever started it has stopped watching. Both slot units and the agent should
+be `enabled`, and `systemctl is-enabled` on each of them belongs in the post-cutover check.
+
+## Monitoring
+The agent exposes two different questions, and monitoring wants the second one:
+
+- `GET /health` — **liveness**. The process is up. It answers 200 even when the search API behind
+  it is gone.
+- `GET /ready` — **readiness**. The process is up *and* the search API answers. 200 when the agent
+  can actually retrieve, 503 with the reason when it cannot.
+
+The distinction is not academic. With the index unreachable, the agent still accepts chats and the
+model still writes fluent answers — from its own memory rather than from retrieved tiles. Liveness
+stays green throughout, so a monitor watching only `/health` reports a healthy service that is
+silently answering off-corpus. Those turns now end as degraded rather than done and log as
+`chat DEGRADED`, and the frontend marks the reply as not grounded.
 
 ## Files
 - `deploy.sh` — CD restart logic (invoked by the Deploy workflow)

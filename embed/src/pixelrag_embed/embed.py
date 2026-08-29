@@ -41,10 +41,19 @@ Chunk embedding (default, recommended):
 """
 
 import argparse
+import atexit
 import hashlib
 import io
 import json
 import logging
+
+# Import multiprocessing at module level BEFORE atexit so mp's own
+# _exit_function (which joins non-daemon children without timeout) is
+# registered FIRST. Our _close_all_persistent_pools is registered last,
+# so atexit LIFO order runs ours first — we force-kill stragglers before
+# mp's handler can hang on them.
+import multiprocessing
+import multiprocessing.util  # noqa: F401
 import os
 import queue
 import subprocess
@@ -54,15 +63,6 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import NamedTuple
-
-# Import multiprocessing at module level BEFORE atexit so mp's own
-# _exit_function (which joins non-daemon children without timeout) is
-# registered FIRST. Our _close_all_persistent_pools is registered last,
-# so atexit LIFO order runs ours first — we force-kill stragglers before
-# mp's handler can hang on them.
-import multiprocessing  # noqa: F401
-import multiprocessing.util  # noqa: F401
-import atexit
 
 import numpy as np
 from PIL import Image
@@ -264,13 +264,14 @@ def scan_shard_tiles(
         if not meta.get("complete", False):
             continue
 
-        # Extract article_id from directory name: "3104240.png.tiles" -> 3104240
-        dir_name = tiles_dir.name  # e.g. "3104240.png.tiles"
-        try:
-            article_id = int(dir_name.split(".")[0])
-        except (ValueError, IndexError):
-            logger.warning("Cannot parse article_id from %s", dir_name)
-            continue
+        article_id = meta.get("article_id")
+        if article_id is None:
+            dir_name = tiles_dir.name
+            try:
+                article_id = int(dir_name.split(".")[0])
+            except (ValueError, IndexError):
+                logger.warning("Cannot parse article_id from %s", dir_name)
+                continue
 
         if article_id in skip:
             continue
@@ -343,12 +344,23 @@ def scan_shard_chunks(
             logger.warning("Skipping %s: %s", chunks_json, e)
             continue
 
-        dir_name = tiles_dir.name
-        try:
-            article_id = int(dir_name.split(".")[0])
-        except (ValueError, IndexError):
-            logger.warning("Cannot parse article_id from %s", dir_name)
-            continue
+        article_id = meta.get("article_id")
+        if article_id is None:
+            # chunks.json predates the article_id contract — try the sibling
+            # tiles.json (CPU embedder does the same), then the directory name.
+            tiles_json = tiles_dir / "tiles.json"
+            if tiles_json.exists():
+                try:
+                    article_id = json.loads(tiles_json.read_text()).get("article_id")
+                except (json.JSONDecodeError, OSError):
+                    pass
+        if article_id is None:
+            dir_name = tiles_dir.name
+            try:
+                article_id = int(dir_name.split(".")[0])
+            except (ValueError, IndexError):
+                logger.warning("Cannot parse article_id from %s", dir_name)
+                continue
 
         if article_id in skip:
             continue
@@ -430,7 +442,7 @@ def read_tiles_and_hash_parallel(
     if io_workers <= 1 or len(tile_infos) <= 1:
         return read_tiles_and_hash(tile_infos)
 
-    results: list[tuple[TileInfo, str, "Image.Image"]] = []
+    results: list[tuple[TileInfo, str, Image.Image]] = []
     with ThreadPoolExecutor(max_workers=io_workers) as pool:
         for item in pool.map(_read_hash_decode_one, tile_infos, chunksize=32):
             if item is not None:
@@ -611,9 +623,10 @@ def _init_direct_gpu(
     )
 
     if adapter_path:
+        import re as _re
+
         from peft import PeftModel, set_peft_model_state_dict
         from safetensors.torch import load_file as load_safetensors
-        import re as _re
 
         logger.info("GPU %d: loading LoRA adapter from %s", gpu_id, adapter_path)
         # The adapter was trained on Qwen3VLModel (BiQwen3), where attention
@@ -1364,7 +1377,7 @@ class PersistentGpuWorkerPool:
         self.work_queue = self.ctx.Queue()  # shared across all workers
         self.result_queue = self.ctx.Queue()
         self.gpu_ids = list(gpu_ids)
-        self.workers: dict[int, "mp.Process"] = {}
+        self.workers: dict[int, mp.Process] = {}
         # Store init params for respawning dead workers
         self._model_path = model_path
         self._backend = backend
@@ -1728,7 +1741,7 @@ def run_gpu_workers_parallel(
 
     ctx = mp.get_context("spawn")
     result_queue = ctx.Queue()
-    procs: list[tuple[int, "mp.Process"]] = []
+    procs: list[tuple[int, mp.Process]] = []
 
     # Count active GPUs first to size the barrier correctly.
     active_gids = [gid for gid in gpu_ids if per_gpu.get(gid)]
