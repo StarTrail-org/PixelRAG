@@ -64,21 +64,36 @@ def get_model_config(model_name: str) -> Dict[str, Any]:
     minimax_key = model_lower.rsplit("/", 1)[-1]
     minimax_model = MINIMAX_MODELS.get(minimax_key)
     if minimax_model:
-        region = os.getenv("MINIMAX_API_REGION", "global_en").lower()
-        if region not in MINIMAX_ENDPOINTS:
-            supported = ", ".join(MINIMAX_ENDPOINTS)
-            raise ValueError(
-                f"Unsupported MINIMAX_API_REGION {region!r}; expected one of: {supported}"
-            )
-        endpoints = MINIMAX_ENDPOINTS[region]
+        # The two bases are independent overrides for gateways and proxies, so
+        # resolve them first and consult a region only for whichever was left
+        # unset. Validating the region up front rejected deployments that had
+        # pinned both endpoints and were not using a region at all.
+        api_base = os.getenv("MINIMAX_API_BASE")
+        anthropic_api_base = os.getenv("MINIMAX_ANTHROPIC_API_BASE")
+        if api_base is None or anthropic_api_base is None:
+            region = os.getenv("MINIMAX_API_REGION", "global_en").lower()
+            if region not in MINIMAX_ENDPOINTS:
+                supported = ", ".join(MINIMAX_ENDPOINTS)
+                raise ValueError(
+                    f"Unsupported MINIMAX_API_REGION {region!r}; "
+                    f"expected one of: {supported}"
+                )
+            endpoints = MINIMAX_ENDPOINTS[region]
+            if api_base is None:
+                api_base = endpoints["api_base"]
+            if anthropic_api_base is None:
+                anthropic_api_base = endpoints["anthropic_api_base"]
+
         return {
-            "api_base": os.getenv("MINIMAX_API_BASE", endpoints["api_base"]),
-            "anthropic_api_base": os.getenv(
-                "MINIMAX_ANTHROPIC_API_BASE", endpoints["anthropic_api_base"]
-            ),
+            "api_base": api_base,
+            "anthropic_api_base": anthropic_api_base,
             "api_key": os.getenv("MINIMAX_API_KEY", os.getenv("API_KEY", "dummy")),
             "model": minimax_model,
-            **MINIMAX_MODEL_METADATA[minimax_key],
+            # MINIMAX_MODELS is the registry; this is a side table keyed off it
+            # with nothing enforcing that the two agree. A model listed in the
+            # registry has to resolve whether or not its capability entry has
+            # been filled in — the caller reads api_base, api_key and model.
+            **MINIMAX_MODEL_METADATA.get(minimax_key, {}),
         }
 
     # Gemini models
