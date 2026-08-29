@@ -34,6 +34,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+from ..chrome import sandbox_args
 from .page_metrics import CONTENT_BOTTOM_JS
 
 logger = logging.getLogger("pixelrag_render.backends.fast_cdp")
@@ -51,7 +52,7 @@ _GPU_ARGS = (
     else ["--disable-gpu"]
 )
 CHROME_ARGS = [
-    "--no-sandbox",
+    *sandbox_args(),
     "--disable-dev-shm-usage",
     *_GPU_ARGS,
     "--disable-renderer-backgrounding",

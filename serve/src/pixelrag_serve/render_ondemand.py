@@ -23,6 +23,8 @@ import time
 import urllib.request
 from urllib.parse import quote
 
+from pixelrag_render.chrome import sandbox_args
+
 _render_lock = threading.Lock()  # one Chrome render at a time per process
 # Hard timeout (seconds) for a single page render subprocess.
 _RENDER_TIMEOUT = float(os.environ.get("PIXELRAG_RENDER_TIMEOUT", "120"))
@@ -87,8 +89,8 @@ class OnDemandTiles:
                     chrome,
                     f"--remote-debugging-port={port}",
                     "--headless=new",
-                    "--no-sandbox",
                     "--disable-gpu",
+                    *sandbox_args(),
                     f"--user-data-dir={self._chrome_udd}",
                     "about:blank",
                 ],
