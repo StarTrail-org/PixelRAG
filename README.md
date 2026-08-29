@@ -174,8 +174,11 @@ pixelrag serve --index-dir ./my_index --port 30001
 
 No GPU required — runs on macOS (Apple Silicon) or any machine with Python 3.10+.
 
+PDF rendering needs the `pdf` extra and poppler (`brew install poppler`, or
+`apt-get install poppler-utils` on Debian/Ubuntu).
+
 ```bash
-pip install 'pixelrag[index]'
+pip install 'pixelrag[index,pdf]'
 
 # 1. Grab a sample PDF (or use your own)
 curl -L -o paper.pdf https://raw.githubusercontent.com/StarTrail-org/PixelRAG/main/assets/pixelrag-paper.pdf
