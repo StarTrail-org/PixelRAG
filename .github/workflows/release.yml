@@ -32,6 +32,20 @@ jobs:
         with:
           version: "latest"
 
+      # Guard against tag/version drift: a release tag `vX.Y.Z` must match the
+      # version in pyproject.toml, otherwise we'd build (and try to overwrite) the
+      # wrong version on PyPI. Only enforced for the `release` trigger (which has a tag).
+      - name: Check tag matches package version
+        if: ${{ github.event_name == 'release' }}
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(uv version --short)"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Release tag ($tag) does not match pyproject.toml version ($pkg). Bump the version and re-tag."
+            exit 1
+          fi
+          echo "Tag and package version agree: $pkg"
+
       - name: Build
         run: uv build --out-dir dist
 
