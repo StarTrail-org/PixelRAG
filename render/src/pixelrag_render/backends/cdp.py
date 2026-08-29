@@ -549,7 +549,9 @@ async def capture_url(
                 with open(tile_dir / "text.md", "w") as f:
                     f.write(f"# {url}\n\n{page_text}\n")
         except Exception:
-            pass  # text extraction is best-effort
+            # Best-effort: the tiles are the primary output and are already
+            # written, so a failed text probe must not fail the capture.
+            logger.warning("%s: page text extraction failed", url, exc_info=True)
 
     return len(tiles)
 
@@ -993,8 +995,16 @@ def render_urls(
         image_format != "jpeg"
         or viewport_width != VIEWPORT_W
         or wait_network_idle
+        or extract_text
         or not from_surface
     ):
+        if extract_text:
+            # Same trade as wait_network_idle below: say so rather than
+            # letting --extract-text silently produce no text.md.
+            logger.info(
+                "extract_text is set: using the standard capture path "
+                "(the turbo path does not implement text extraction yet)"
+            )
         if wait_network_idle:
             # Be loud about the trade: users with a turbo-capable Chrome would
             # otherwise silently lose ~half their capture throughput.
