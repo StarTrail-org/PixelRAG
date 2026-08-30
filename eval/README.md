@@ -201,8 +201,10 @@ uv run python run_bench.py \
   --num-examples 1
 ```
 
-`run_bench.py` uses the global OpenAI-compatible endpoint by default. Set
-`MINIMAX_API_BASE=https://api.minimaxi.com/v1` to use the China endpoint.
+`run_bench.py` uses the global endpoints by default. Set
+`MINIMAX_API_REGION=cn_zh` to select the China OpenAI- and Anthropic-compatible
+endpoints together. `MINIMAX_API_BASE` and `MINIMAX_ANTHROPIC_API_BASE` remain
+available as independent overrides for gateways and proxies.
 
 The official API entry points are:
 
