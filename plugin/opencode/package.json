@@ -1,0 +1,31 @@
+{
+  "name": "@startrail/pixelbrowse",
+  "version": "0.1.0",
+  "description": "Give opencode eyes — screenshot any URL or document with pixelshot and read it visually",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "pixelrag",
+    "pixelshot",
+    "screenshot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/StarTrail-org/PixelRAG",
+    "directory": "plugin/opencode"
+  },
+  "homepage": "https://github.com/StarTrail-org/PixelRAG",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.9"
+  }
+}
