@@ -113,7 +113,15 @@ def render_pdf(
         "dpi": dpi,
         "total_pages": len(saved_tiles),
         "tiles": saved_tiles,
-        "complete": True,
+        # The selection the render ran with, recorded for the same reason the
+        # URL manifests record their tile height: so a consumer reading
+        # tiles.json can see what was asked for rather than be told out of band.
+        "requested_pages": sorted(pages) if pages is not None else None,
+        # A page selection means these tiles are some of the document rather
+        # than all of it, and nothing here has checked the selection against
+        # the document's length. Only a whole-document render may claim to be
+        # complete — see #139 on what an unconditional flag costs downstream.
+        "complete": pages is None,
     }
     with open(tile_dir / "tiles.json", "w") as f:
         json.dump(manifest, f)
