@@ -28,7 +28,7 @@ if "lib" not in sys.modules:
     _pkg.__path__ = [str(_LIB)]
     sys.modules["lib"] = _pkg
 
-from lib.llm import LLMClient  # noqa: E402
+from lib.llm import LLMClient
 
 
 @pytest.fixture(autouse=True)
