@@ -9,11 +9,22 @@ entire document.
 """
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 from PIL import Image
 from pixelrag_render import render_pdf
+
+# pdf2image ships in the optional `pdf` extra and needs poppler's rasteriser on
+# PATH; CI syncs only `--extra dev`. Skip rather than fail, matching how the
+# suite treats the other extras (see test_serve_backends.py).
+pytest.importorskip("pdf2image", reason="pdf extra not installed")
+
+pytestmark = pytest.mark.skipif(
+    shutil.which("pdftoppm") is None,
+    reason="poppler (pdftoppm) not on PATH; pdf2image cannot rasterise",
+)
 
 
 @pytest.fixture
