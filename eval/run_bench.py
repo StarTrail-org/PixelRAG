@@ -977,6 +977,14 @@ async def run_async(args):
             )
         logger.info(f"Using Commonstack API with model: {args.model}")
         model = args.model
+    elif args.litellm:
+        # LiteLLM SDK: the provider-prefixed --model selects the backend, and
+        # credentials come from each provider's own env var (or --api-base for a
+        # LiteLLM proxy). Keep both optional so blank values fall through to env.
+        model = args.model
+        api_base = args.api_base or ""
+        api_key = args.api_key or "dummy"
+        logger.info(f"Using LiteLLM SDK with model: {args.model}")
     else:
         # Override with command-line args if provided
         # For Gemini, api_base from config is None, so use command-line arg or default
@@ -1107,6 +1115,7 @@ async def run_async(args):
         timeout=args.timeout,
         enable_thinking=(False if args.no_think else None),
         force_openai_compat=(args.open_router or args.commonstack),
+        use_litellm=args.litellm,
     )
 
     # 3b. Create pixel-compressed encoder for generation if requested
@@ -1322,6 +1331,13 @@ def main():
         "--commonstack",
         action="store_true",
         help="Use Commonstack API (https://api.commonstack.ai). Requires --api-key or COMMONSTACK_API_KEY env var.",
+    )
+    parser.add_argument(
+        "--litellm",
+        action="store_true",
+        help="Route generation through the LiteLLM SDK (100+ providers via one "
+        "provider-prefixed --model, e.g. anthropic/claude-3-5-sonnet). Optional "
+        "--api-base points at a LiteLLM proxy; keys fall back to each provider's env var.",
     )
 
     # General args
