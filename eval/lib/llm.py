@@ -35,6 +35,11 @@ from .retrieval import RetrievalResult
 
 logger = logging.getLogger(__name__)
 
+# Some modern reasoning models deprecate `temperature` (Claude Opus 4.7+, some
+# GPT-5 variants). Both backend paths consult this list, so a newly released
+# model is added in one place rather than drifting between them.
+MODELS_DROPPING_TEMPERATURE = ("opus-4-7", "opus-4-8", "gpt-5.4-pro")
+
 # System Prompts
 SYSTEM_PROMPT_NAIVE = """You are a research assistant who answers questions.
 Use <think></think> tags to show your reasoning if needed.
@@ -733,9 +738,7 @@ class LLMClient:
         # Some modern reasoning models deprecate `temperature` (Claude Opus 4.7+, some GPT-5 variants).
         # Only send it when we actually want to override the default.
         model_lower = self.model.lower()
-        drops_temperature = any(
-            x in model_lower for x in ("opus-4-7", "opus-4-8", "gpt-5.4-pro")
-        )
+        drops_temperature = any(x in model_lower for x in MODELS_DROPPING_TEMPERATURE)
         if not drops_temperature:
             kwargs["temperature"] = self.temperature
         if self.enable_thinking is not None:
@@ -784,9 +787,7 @@ class LLMClient:
 
         # Some reasoning models reject `temperature`; mirror the OpenAI path.
         model_lower = self.model.lower()
-        drops_temperature = any(
-            x in model_lower for x in ("opus-4-7", "opus-4-8", "gpt-5.4-pro")
-        )
+        drops_temperature = any(x in model_lower for x in MODELS_DROPPING_TEMPERATURE)
         if not drops_temperature:
             kwargs["temperature"] = self.temperature
         if self.enable_thinking is not None:
