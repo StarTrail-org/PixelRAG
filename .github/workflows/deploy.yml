@@ -18,8 +18,6 @@ jobs:
     runs-on: [self-hosted, deploy]
     steps:
       - name: Fast-forward working tree + restart what changed
-        env:
-          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           cd /home/yichuan/visrag
@@ -33,9 +31,19 @@ jobs:
           fi
           if ! git diff --quiet || ! git diff --cached --quiet; then
             echo "::warning::deploy box has uncommitted changes — skipping to avoid clobbering"
+            echo "### Deploy skipped: the box has uncommitted changes" >> "$GITHUB_STEP_SUMMARY"
+            git status --short >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
+          # Measure the change set from where this box actually is, not from
+          # github.event.before. A manual dispatch carries no `before`, and
+          # deploy.sh then falls back to the tip commit alone — so everything
+          # the box was behind by is invisible and the services that changed
+          # are never restarted, while the run still reports success. The
+          # tree's own HEAD is right for both triggers and for a box that has
+          # fallen several commits behind.
+          before=$(git rev-parse HEAD)
           git fetch origin main
           git merge --ff-only origin/main
-          bash deploy/deploy.sh "${BEFORE:-}"
+          bash deploy/deploy.sh "$before"

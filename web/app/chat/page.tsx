@@ -15,6 +15,7 @@ import {
   ImagePlus,
   X,
   Clock,
+  AlertTriangle,
 } from "lucide-react"
 import { tileUrl } from "@/lib/api"
 import { getHistory, addHistory, clearHistory } from "@/lib/history"
@@ -55,6 +56,13 @@ interface ChatMessage {
   searching?: string
   tiles?: TileView[]
   viewingTile?: boolean
+  // The retrieval backend was unreachable, so whatever the model said is not
+  // grounded in Wikipedia tiles. Marked so the answer cannot be mistaken for
+  // an ordinary one.
+  degraded?: boolean
+  // The turn cap stopped the agent mid-investigation. Unlike `degraded`, what
+  // it did say is grounded — it is just incomplete.
+  truncated?: boolean
 }
 
 const EXAMPLES = [
@@ -173,7 +181,8 @@ function ChatPageInner() {
         case "searching": return { ...m, searching: data.query as string }
         case "search_results": return { ...m, searching: undefined, searches: [...(m.searches || []), { query: data.query as string, hits: data.hits as SearchResult["hits"] }] }
         case "viewing_tile": return { ...m, viewingTile: true, tiles: [...(m.tiles || []), { article_id: data.article_id as number, tile_index: data.tile_index as number, chunk_index: data.chunk_index as number }] }
-        case "done": return { ...m, searching: undefined, viewingTile: false }
+        case "search_unavailable": return { ...m, searching: undefined, degraded: true }
+        case "done": return { ...m, searching: undefined, viewingTile: false, degraded: m.degraded || Boolean(data.degraded), truncated: Boolean(data.truncated) }
         case "error": return { ...m, content: m.content || `Error: ${data.message}`, searching: undefined }
         default: return m
       }
@@ -445,6 +454,24 @@ function AssistantMessage({ message, isStreaming, onTileClick }: { message: Chat
           <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--chat-accent)]" />
           <span className="text-[12px] text-[var(--chat-secondary)]">Searching <span className="font-medium text-[var(--chat-fg)]">&ldquo;{message.searching}&rdquo;</span></span>
         </motion.div>
+      )}
+
+      {message.degraded && (
+        <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+          <span className="text-[12px] leading-[1.6] text-[var(--chat-secondary)]">
+            Visual search was unavailable, so this reply was not read off Wikipedia screenshots. Try again in a moment.
+          </span>
+        </div>
+      )}
+
+      {message.truncated && !message.degraded && (
+        <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-[var(--chat-border)] bg-[var(--chat-card)] px-3.5 py-2.5">
+          <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--chat-muted)]" />
+          <span className="text-[12px] leading-[1.6] text-[var(--chat-secondary)]">
+            Stopped early — this answer is based on the tiles read so far, not a finished search.
+          </span>
+        </div>
       )}
 
       {message.content && (

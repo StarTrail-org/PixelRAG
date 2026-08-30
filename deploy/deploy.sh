@@ -25,7 +25,10 @@ say "deploy: ${BEFORE:-<none>} -> ${AFTER}"
 if [ -n "$BEFORE" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
   CHANGED=$(git diff --name-only "$BEFORE" "$AFTER")
 else
-  # First run / unknown base: treat the tip commit's files as the change set.
+  # Defensive fallback only — the workflow passes the box's pre-merge HEAD, so
+  # this should not be reached. It sees just the tip commit, which understates
+  # the change set whenever the box was more than one commit behind.
+  say "WARN: no usable base commit — falling back to the tip commit's files only"
   CHANGED=$(git show --name-only --pretty="" "$AFTER")
 fi
 say "changed: $(echo "$CHANGED" | tr '\n' ' ')"

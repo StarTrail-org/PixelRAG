@@ -36,6 +36,8 @@ pixelshot document.pdf --output /tmp/pixelbrowse
 IMPORTANT: Always use `--tile-height 1568` for screenshots you will read visually.
 Claude's vision model downscales images with long edge > 1568px (Sonnet/Haiku) or 2576px (Opus).
 The default 8192px tile height will be downscaled and text becomes unreadable.
+Note that the tile height is also the emulated viewport height, so at 1568 an ordinary article
+is a dozen-plus tiles rather than one or two — the manifest tells you how many (see Workflow).
 
 IMPORTANT: Always use `--wait-network-idle` for URLs. Without it, JavaScript-heavy
 pages (most modern sites / single-page apps) are captured before they finish rendering
@@ -47,14 +49,27 @@ After rendering, read the tile images from the output directory to visually unde
 ## Workflow
 
 1. Run `pixelshot <url> --output /tmp/pixelbrowse --tile-height 1568 --wait-network-idle`
-2. Read `/tmp/pixelbrowse/<domain>.png.tiles/tile_0000.jpg` directly (no need to ls — the naming is deterministic)
-3. If the page is long, also read tile_0001.jpg, tile_0002.jpg, etc.
+2. Read `/tmp/pixelbrowse/<domain>.png.tiles/tiles.json` — the manifest of what was captured
+3. Read every tile it lists, in order, not just `tile_0000.jpg`
 
 Output path pattern: `/tmp/pixelbrowse/<sanitized-url>.png.tiles/tile_NNNN.jpg`
 - For `https://news.ycombinator.com` → `/tmp/pixelbrowse/news.ycombinator.com.png.tiles/tile_0000.jpg`
 - For `https://example.com/page` → `/tmp/pixelbrowse/example.com_page.png.tiles/tile_0000.jpg`
 
-Do NOT run `ls` — just read tile_0000.jpg. If it doesn't exist, the page had no content.
+Read `tiles.json` rather than `ls` (or guessing at tile numbers) — it is one file read and it
+answers both questions the tile files can't:
+
+```json
+{"url": "...", "page_height": 29184, "tile_height": 1568, "tiles": ["tile_0000.jpg", "..."], "complete": true}
+```
+
+- **`tiles`** — the full list. A long page is many tiles; reading only `tile_0000.jpg` on a
+  30,000px article means reading 5% of it. Read them all before summarising.
+- **`complete: false`** — the capture is not trustworthy: pixelshot could not measure the page,
+  so what you have is roughly one viewport of an unknown-length page. Say so in your answer
+  rather than presenting it as the whole page. Re-running with `--wait-network-idle` (if it was
+  omitted) or a different `--viewport-width` often fixes it.
+- **No `tiles.json` at all** — the render failed. That is an error to report, not an empty page.
 
 ## Crop & Zoom
 
