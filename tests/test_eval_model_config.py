@@ -183,3 +183,40 @@ def test_minimax_model_registered_without_metadata_still_resolves(monkeypatch):
     assert config["api_base"] == "https://api.minimax.io/v1"
     assert config["anthropic_api_base"] == "https://api.minimax.io/anthropic"
     assert "context_window" not in config
+
+
+def test_orcarouter_model_config_uses_the_gateway_default(monkeypatch):
+    """The branch referenced a constant that was never defined.
+
+    `os.getenv("ORCAROUTER_API_BASE", ORCAROUTER_API_BASE)` raised NameError for
+    every model routed through the gateway, so the provider could not be used at
+    all -- and ruff's F821 failed the lint gate for the whole repo.
+    """
+    monkeypatch.delenv("ORCAROUTER_API_BASE", raising=False)
+    monkeypatch.delenv("ORCAROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("API_KEY", "fallback-key")
+
+    config = get_model_config("anthropic/claude-opus-4-8-orcarouter")
+
+    assert config["api_base"] == "https://api.orcarouter.ai/v1"
+    assert config["api_key"] == "fallback-key"
+    assert config["model"] == "anthropic/claude-opus-4-8-orcarouter"
+
+
+def test_orcarouter_model_config_supports_endpoint_and_key_overrides(monkeypatch):
+    monkeypatch.setenv("ORCAROUTER_API_BASE", "https://gateway.internal/v1")
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca")
+
+    config = get_model_config("gpt-4o-orcarouter")
+
+    assert config["api_base"] == "https://gateway.internal/v1"
+    assert config["api_key"] == "sk-orca"
+
+
+def test_orcarouter_branch_does_not_capture_unrelated_models(monkeypatch):
+    """`"orcarouter" in model_lower` is a substring match; keep it narrow."""
+    monkeypatch.setenv("API_BASE", "http://localhost:9000/v1")
+
+    config = get_model_config("Qwen/Qwen3-VL-4B-Instruct")
+
+    assert config["api_base"] == "http://localhost:9000/v1"

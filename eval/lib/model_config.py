@@ -36,6 +36,11 @@ MINIMAX_MODEL_METADATA = {
     },
 }
 
+# OrcaRouter is an OpenAI-compatible gateway, the same shape as the OpenRouter
+# and Commonstack aggregators wired up in run_bench.py. Defined here so the CLI
+# and the model-config branch cannot drift to different endpoints.
+ORCAROUTER_API_BASE = "https://api.orcarouter.ai/v1"
+
 MINIMAX_ENDPOINTS = {
     "global_en": {
         "api_base": "https://api.minimax.io/v1",
