@@ -451,6 +451,10 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             nlist,
         )
         cmd += ["--nlist", str(nlist)]
+        if index_cfg.get("pq_m"):
+            cmd += ["--pq-m", str(index_cfg["pq_m"])]
+            if index_cfg.get("pq_nbits"):
+                cmd += ["--pq-nbits", str(index_cfg["pq_nbits"])]
     subprocess.run(cmd, check=True)
 
     logger.info("Index built at %s", output)
