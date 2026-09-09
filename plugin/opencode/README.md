@@ -33,7 +33,7 @@ opencode run "screenshot https://news.ycombinator.com and summarize the top stor
 
 The agent calls the `screenshot` tool with a URL (or a local HTML file, PDF, or image),
 gets back the tile image paths, and reads them visually. Optional tool args: `output`
-(tile directory, default `/tmp/pixelbrowse`) and `viewportWidth` (default 875; use 1280
+(tile directory, default `.opencode/pixelbrowse` inside the project) and `viewportWidth` (default 875; use 1280
 for desktop layouts).
 
 No MCP server, no backend — the plugin just calls `pixelshot` on your machine.
