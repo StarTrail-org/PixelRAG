@@ -13,7 +13,7 @@ further down. Tiles are rendered at 1568px height for optimal vision-model reada
 
 If text or details are too small to read, crop the region of interest from a tile and
 re-read at full resolution. Pillow is always available (it's a pixelshot dependency):
-  python3 -c "from PIL import Image; Image.open('<tile>').crop((x1, y1, x2, y2)).save('/tmp/pixelbrowse/crop.png')"
+  python3 -c "from PIL import Image; Image.open('<tile>').crop((x1, y1, x2, y2)).save('<tile>.crop.png')"
 Crop to roughly 800x800 or smaller for maximum clarity.`
 
 const INSTALL_HINT =
@@ -55,7 +55,9 @@ export const PixelbrowsePlugin = async ({ $ }) => {
           output: tool.schema
             .string()
             .optional()
-            .describe("Output directory for tiles (default /tmp/pixelbrowse)"),
+            .describe(
+              "Output directory for tiles (default .opencode/pixelbrowse inside the project)"
+            ),
           viewportWidth: tool.schema
             .number()
             .optional()
@@ -63,8 +65,12 @@ export const PixelbrowsePlugin = async ({ $ }) => {
               "Viewport width in px (default 875, mobile/article width). Use 1280 for desktop layouts."
             ),
         },
-        async execute(args) {
-          const output = args.output ?? "/tmp/pixelbrowse"
+        async execute(args, context) {
+          // Default inside the project: tiles written outside it trip opencode's
+          // external_directory permission, which auto-rejects under `opencode run`,
+          // so the agent gets tile paths it is not allowed to read.
+          const output =
+            args.output ?? join(context.worktree ?? context.directory, ".opencode", "pixelbrowse")
 
           try {
             await $`which pixelshot`.quiet()
