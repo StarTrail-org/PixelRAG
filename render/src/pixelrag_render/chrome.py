@@ -167,6 +167,23 @@ def is_turbo_capable(chrome_path: str) -> bool:
         return False
 
 
+def _safe_members(tar: tarfile.TarFile):
+    """Yield only members whose extracted path stays inside INSTALL_DIR.
+
+    Module-level so the extraction guard is unit-testable without running
+    the full download path.
+    """
+    base = INSTALL_DIR.resolve()
+    for member in tar.getmembers():
+        target = (base / member.name).resolve()
+        if target != base and not target.is_relative_to(base):
+            raise RuntimeError(
+                f"Refusing to extract archive member outside install dir: "
+                f"{member.name!r}"
+            )
+        yield member
+
+
 def install_chrome(version: str | None = None, force: bool = False) -> Path:
     """Download and install the patched headless_shell binary.
 
@@ -229,7 +246,7 @@ def install_chrome(version: str | None = None, force: bool = False) -> Path:
                 )
 
         with tarfile.open(decomp_path) as tar:
-            tar.extractall(INSTALL_DIR)
+            tar.extractall(INSTALL_DIR, members=_safe_members(tar))
         os.unlink(decomp_path)
 
         # Set executable permission

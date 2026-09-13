@@ -83,13 +83,19 @@ def render_pdf(
     saved_tiles: list[str] = []
     chunks_info: list[dict] = []
     for idx, img in enumerate(images):
-        # If caller provided a sparse page list, skip pages not in the list
-        if pages is not None:
-            page_num = min(pages) + idx
-            if page_num not in pages:
-                continue
+        # Page number (1-based) this image corresponds to. pdf2image returns
+        # consecutive pages starting at first_page, so the page number is
+        # first_page + idx.
+        page_num = (min(pages) + idx) if pages is not None else (idx + 1)
+        if pages is not None and page_num not in pages:
+            continue  # sparse page list: drop pages the caller didn't ask for
 
-        tile_name = f"tile_{idx:04d}.jpg"
+        # Name tiles by PAGE NUMBER, not enumerate index: with a sparse page
+        # list (pages=[3,5]) the old code produced tile_0000.jpg = page 3 but
+        # recorded tile_index=0, so /tile/{aid}/{0}/... served page 3 while
+        # the index metadata pointed at page 1. Page-numbered names keep
+        # tiles.json, chunks.json, _resolve_path and the on-disk files aligned.
+        tile_name = f"tile_{page_num:04d}.jpg"
         tile_path = tile_dir / tile_name
         img.save(str(tile_path), "JPEG", quality=quality)
         saved_tiles.append(tile_name)
@@ -98,7 +104,7 @@ def render_pdf(
         chunks_info.append(
             {
                 "tile": tile_name,
-                "tile_index": idx,
+                "tile_index": page_num,
                 "chunk_index": 0,
                 "file": tile_name,
                 "y_offset": 0,
@@ -106,7 +112,7 @@ def render_pdf(
                 "width": w,
             }
         )
-        logger.debug("  Page %d → %s (%dx%d)", idx, tile_name, w, h)
+        logger.debug("  Page %d → %s (%dx%d)", page_num, tile_name, w, h)
 
     manifest = {
         "source": str(path),

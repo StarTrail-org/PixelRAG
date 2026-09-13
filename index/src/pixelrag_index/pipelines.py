@@ -444,6 +444,11 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
         total_vectors = sum(
             np.load(f, mmap_mode="r")["embeddings"].shape[0] for f in npz_files
         )
+        if total_vectors == 0:
+            raise RuntimeError(
+                "No embeddings produced — every source document failed to "
+                "render/embed. Check the render logs; nothing to index."
+            )
         nlist = min(4096, max(1, total_vectors // 40))
         logger.info(
             "Stage 4/4: Building FAISS index (%d vectors, nlist=%d)...",

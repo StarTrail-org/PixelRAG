@@ -101,15 +101,16 @@ def _merge_all_shards(shard_files):
 
     print(f"Concat done: {row:,} vectors in {time.time() - t0:.0f}s")
 
-    # Global dedup: numpy-vectorized unique on (article_id, tile, chunk)
-    # Pack into single int64: article_id * 1e8 + tile * 1e4 + chunk
+    # Global dedup: numpy-vectorized unique on (article_id, tile, chunk).
+    # Packing into a single int64 (aid*1e8 + tile*1e4 + chunk) collides once
+    # tile_index >= 10000 (tile field overflows into the article field) and
+    # silently drops a vector; a structured array key has no such bound.
     print("Deduplicating...")
     t1 = time.time()
-    keys = (
-        all_aids[:row] * 100_000_000
-        + all_tiles[:row].astype(np.int64) * 10_000
-        + all_chunks[:row].astype(np.int64)
-    )
+    keys = np.empty(row, dtype=[("a", "i8"), ("t", "i4"), ("c", "i4")])
+    keys["a"] = all_aids[:row]
+    keys["t"] = all_tiles[:row]
+    keys["c"] = all_chunks[:row]
     _, unique_idx = np.unique(keys, return_index=True)
     unique_idx.sort()  # preserve original order
     n_unique = len(unique_idx)
