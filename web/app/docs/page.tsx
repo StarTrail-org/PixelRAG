@@ -420,6 +420,25 @@ curl -X POST https://pixelrag.ai/api/search \\
         text and/or an image, <strong className="font-medium text-foreground">fetch tiles</strong> to
         read the screenshots, then answer from what they show.
       </p>
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+        For LangChain and LangGraph, see the community-maintained{" "}
+        <a
+          href="https://pypi.org/project/pixelrag-langchain/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline-offset-2 hover:underline"
+        >
+          pixelrag-langchain integration
+        </a>{" "}
+        (<a
+          href="https://github.com/navneet-singh2907/pixelrag-langchain"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline-offset-2 hover:underline"
+        >
+          source on GitHub
+        </a>).
+      </p>
       <ShellBlock
         code={`# Text-only search
 curl -X POST https://pixelrag.ai/api/search \\
