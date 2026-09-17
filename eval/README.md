@@ -172,6 +172,28 @@ text-only text retrieval.
 PYTHONPATH=. .venv/bin/python -m lib.grader <task> <responses.jsonl>
 ```
 
+## Atlas Cloud readers
+
+Select Atlas Cloud explicitly with `--atlascloud`; other readers are unchanged.
+Set `ATLASCLOUD_API_KEY` and use an exact model ID from the
+[live catalog](https://api.atlascloud.ai/api/v1/models):
+
+```bash
+export ATLASCLOUD_API_KEY=your-api-key
+python run_bench.py --task simpleqa --model deepseek-ai/deepseek-v3.2 \
+    --atlascloud --num-examples 1 --max-concurrent 1 --max-tokens 256
+```
+
+This text-only example does not use retrieval. For screenshot benchmarks, select
+a model supporting image input. Model IDs are forwarded unchanged to
+`https://api.atlascloud.ai/v1`, including IDs containing `gemini`; they do not
+select the native Google SDK. `--api-key` overrides `ATLASCLOUD_API_KEY`, and
+other providers' environment keys are never used. Do not combine this option
+with another provider flag or `--api-base`.
+
+Atlas requests are not automatically retried, including timeouts, connection
+errors and rate limits, to avoid duplicating billable generation requests.
+
 ## MiniMax readers
 
 Set `MINIMAX_API_KEY` and select either registered model ID. The model context length

@@ -475,6 +475,7 @@ class LLMClient:
         enable_thinking: bool | None = None,
         force_openai_compat: bool = False,
         use_litellm: bool = False,
+        retry_requests: bool = True,
     ):
         self.model = model
         self.temperature = temperature
@@ -482,6 +483,7 @@ class LLMClient:
         self.timeout = timeout
         self.max_context_tokens = max_context_tokens
         self.enable_thinking = enable_thinking
+        self.retry_requests = retry_requests
         # Kept for the LiteLLM path (module-level SDK, no persistent client object).
         self.api_key = api_key
         self.api_base = api_base
@@ -582,6 +584,8 @@ class LLMClient:
                 else:
                     return await self._generate_openai(messages)
             except asyncio.TimeoutError:
+                if not self.retry_requests:
+                    raise
                 timeout_attempts += 1
                 if timeout_attempts >= max_retries:
                     raise
@@ -591,6 +595,8 @@ class LLMClient:
                 )
                 await asyncio.sleep(wait_time)
             except Exception as e:
+                if not self.retry_requests:
+                    raise
                 error_str = str(e).lower()
                 if "timeout" in error_str or "timed out" in error_str:
                     timeout_attempts += 1

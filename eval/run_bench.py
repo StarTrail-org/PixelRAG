@@ -73,6 +73,7 @@ from lib.benchmarks import (
 )
 from lib.model_config import (
     ORCAROUTER_API_BASE,
+    get_atlascloud_config,
     get_model_config,
     get_output_filename,
 )
@@ -957,10 +958,19 @@ async def run_async(args):
         )
 
     # Get model configuration
-    model_config = get_model_config(args.model)
+    model_config = (
+        get_atlascloud_config(args.model, args.api_key)
+        if args.atlascloud
+        else get_model_config(args.model)
+    )
 
     # Handle OpenRouter API
-    if args.open_router:
+    if args.atlascloud:
+        api_base = model_config["api_base"]
+        api_key = model_config["api_key"]
+        model = model_config["model"]
+        logger.info(f"Using Atlas Cloud API with model: {model}")
+    elif args.open_router:
         api_base = "https://openrouter.ai/api/v1"
         if args.api_key and args.api_key != "dummy":
             api_key = args.api_key
@@ -1133,8 +1143,11 @@ async def run_async(args):
         max_context_tokens=args.model_context_length,
         timeout=args.timeout,
         enable_thinking=(False if args.no_think else None),
-        force_openai_compat=(args.open_router or args.commonstack or args.orcarouter),
+        force_openai_compat=(
+            args.open_router or args.commonstack or args.orcarouter or args.atlascloud
+        ),
         use_litellm=args.litellm,
+        retry_requests=not args.atlascloud,
     )
 
     # 3b. Create pixel-compressed encoder for generation if requested
@@ -1355,6 +1368,11 @@ def main():
         "--orcarouter",
         action="store_true",
         help="Use OrcaRouter API (https://api.orcarouter.ai). Requires --api-key or ORCAROUTER_API_KEY env var.",
+    )
+    parser.add_argument(
+        "--atlascloud",
+        action="store_true",
+        help="Use Atlas Cloud with an exact catalog model ID. Requires --api-key or ATLASCLOUD_API_KEY.",
     )
     parser.add_argument(
         "--litellm",
@@ -1908,6 +1926,12 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.atlascloud and (
+        args.open_router or args.commonstack or args.orcarouter or args.litellm
+    ):
+        parser.error("--atlascloud cannot be combined with another provider flag")
+    if args.atlascloud and args.api_base:
+        parser.error("--atlascloud uses its fixed endpoint; omit --api-base")
 
     # Validate mutually exclusive options
     mode_count = sum(
