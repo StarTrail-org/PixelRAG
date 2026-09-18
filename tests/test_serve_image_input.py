@@ -10,11 +10,12 @@ import base64
 import io
 
 import pytest
+
+pytest.importorskip("fastapi", reason="serve extra not installed")
 from fastapi import HTTPException
 from PIL import Image
-from pydantic import ValidationError
-
 from pixelrag_serve.api import Query, SearchRequest, _parse_queries
+from pydantic import ValidationError
 
 
 def _png_b64(w: int, h: int) -> str:
