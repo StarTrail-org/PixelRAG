@@ -13,7 +13,7 @@ import pytest
 
 faiss = pytest.importorskip("faiss")
 sys.path.insert(0, "embed/src")
-from pixelrag_embed.index import build_ivf  # noqa: E402
+from pixelrag_embed.index import build_ivf
 
 
 def _write_shard(emb_dir, n=1024, dim=32):
