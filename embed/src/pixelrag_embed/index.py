@@ -189,6 +189,10 @@ def build_ivf(
     # Build IVF index
     metric_type = faiss.METRIC_INNER_PRODUCT if metric == "ip" else faiss.METRIC_L2
 
+    # Auto-adjust nlist when dataset is smaller than configured nlist
+    if n < nlist:
+        nlist = max(1, n)
+
     # Train on a sample
     actual_train = min(train_sample, n)
     train_indices = np.random.choice(n, actual_train, replace=False)

@@ -45,21 +45,26 @@ def test_web_url_outside_root_and_empty_root(tmp_path):
     assert pipelines._department_of({"path": "/a/b.pdf"}, "") == ""
 
 
-# ---------------------------------------------------------------------------
-# Serve side: IDSelector filter
-# ---------------------------------------------------------------------------
+try:
+    import faiss
+    import numpy as np
+    from pixelrag_serve import api
 
-faiss = pytest.importorskip("faiss")
-np = pytest.importorskip("numpy")
-api = pytest.importorskip("pixelrag_serve.api")
+    _HAS_FAISS = True
+    DIM = 8
+    ARTICLE_IDS = np.array([0, 0, 1, 1, 2, 2], dtype=np.int64)
+    HR_ROWS = {0, 1, 4, 5}
+except ImportError:
+    _HAS_FAISS = False
+    faiss = None
+    np = None
+    api = None
+    DIM = 8
+    ARTICLE_IDS = None
+    HR_ROWS = None
 
-DIM = 8
-# 3 articles × 2 vectors; article 0, 2 → hr; article 1 → ketoan
-ARTICLE_IDS = np.array([0, 0, 1, 1, 2, 2], dtype=np.int64)
-HR_ROWS = {0, 1, 4, 5}
 
-
-def _vectors() -> np.ndarray:
+def _vectors() -> "np.ndarray":
     rng = np.random.default_rng(7)
     v = rng.standard_normal((6, DIM)).astype(np.float32)
     return v / np.linalg.norm(v, axis=1, keepdims=True)
@@ -77,6 +82,7 @@ def _setup_state(index):
     )
 
 
+@pytest.mark.skipif(not _HAS_FAISS, reason="faiss or pixelrag_serve not installed")
 def test_department_positions_maps_articles_to_rows():
     index = faiss.IndexFlatIP(DIM)
     index.add(_vectors())
@@ -85,6 +91,7 @@ def test_department_positions_maps_articles_to_rows():
     assert set(api._department_positions("ketoan").tolist()) == {2, 3}
 
 
+@pytest.mark.skipif(not _HAS_FAISS, reason="faiss or pixelrag_serve not installed")
 def test_flat_index_filter_restricts_hits():
     vecs = _vectors()
     index = faiss.IndexFlatIP(DIM)
@@ -96,6 +103,7 @@ def test_flat_index_filter_restricts_hits():
     assert hits == HR_ROWS  # every hr row returned, nothing else
 
 
+@pytest.mark.skipif(not _HAS_FAISS, reason="faiss or pixelrag_serve not installed")
 def test_ivf_index_filter_restricts_hits():
     vecs = _vectors()
     quantizer = faiss.IndexFlatIP(DIM)
@@ -110,6 +118,7 @@ def test_ivf_index_filter_restricts_hits():
     assert hits == {2, 3}
 
 
+@pytest.mark.skipif(not _HAS_FAISS, reason="faiss or pixelrag_serve not installed")
 def test_unknown_department_raises_404():
     index = faiss.IndexFlatIP(DIM)
     index.add(_vectors())
@@ -120,6 +129,7 @@ def test_unknown_department_raises_404():
     assert "hr" in exc.value.detail  # lists available departments
 
 
+@pytest.mark.skipif(not _HAS_FAISS, reason="faiss or pixelrag_serve not installed")
 def test_index_without_department_metadata_raises_400():
     index = faiss.IndexFlatIP(DIM)
     index.add(_vectors())

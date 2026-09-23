@@ -233,19 +233,29 @@ class KiwixServeManager:
             self._start_instance(idx)
 
     def _kill_proc(self, proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            else:
+                proc.terminate()
         except (OSError, ProcessLookupError):
             pass
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                if hasattr(os, "killpg") and hasattr(os, "getpgid") and hasattr(signal, "SIGKILL"):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                else:
+                    proc.kill()
             except (OSError, ProcessLookupError):
                 pass
 
     def stop(self) -> None:
+        if not hasattr(self, "_procs"):
+            return
         for idx, proc in enumerate(self._procs):
             if proc is not None:
                 self._kill_proc(proc)

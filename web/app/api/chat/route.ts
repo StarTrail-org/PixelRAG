@@ -71,6 +71,14 @@ function retrievalDown(
   }
 }
 
+function safeDecodeURIComponent(str: string): string {
+  try {
+    return decodeURIComponent(str)
+  } catch {
+    return str
+  }
+}
+
 function createTools(
   onEvent: (event: string, data: unknown) => void,
   uploadedImage: string | null,
@@ -166,7 +174,7 @@ function createTools(
           ? h.url.split("/wiki/").pop()
           : h.url
         return {
-          title: decodeURIComponent(slug || "").replace(/_/g, " "),
+          title: safeDecodeURIComponent(slug || "").replace(/_/g, " "),
           url: h.url.startsWith("http")
             ? h.url
             : `https://en.wikipedia.org/wiki/${slug}`,
