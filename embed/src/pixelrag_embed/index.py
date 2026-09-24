@@ -148,8 +148,10 @@ def build_ivf(
     train_sample: int = 500_000,
     metric: str = "ip",
     gpu_id: int = -1,
+    pq_m: int = 0,
+    pq_nbits: int = 8,
 ):
-    """Build FAISS IVFFlat index.
+    """Build a FAISS IVF index — IVFFlat by default, IVFPQ when pq_m > 0.
 
     Args:
         nlist: number of IVF clusters (default 4096, good for ~30M vectors)
@@ -157,6 +159,10 @@ def build_ivf(
         train_sample: number of vectors to sample for K-means training
         metric: 'ip' (inner product / cosine for L2-normalized vectors) or 'l2'
         gpu_id: GPU to use for training (-1 = CPU only)
+        pq_m: PQ sub-quantizers. 0 keeps the uncompressed IVFFlat index; >0 builds
+            an IVFPQ index that stores pq_m bytes/vector (at nbits=8) instead of
+            dim*4 — ~128x smaller for dim=2048, pq_m=64. Must divide dim evenly.
+        pq_nbits: bits per PQ sub-quantizer (4 or 8), only used when pq_m > 0.
     """
     import faiss
 
@@ -195,7 +201,16 @@ def build_ivf(
     train_data = embeddings[train_indices]
 
     quantizer = faiss.IndexFlatIP(dim) if metric == "ip" else faiss.IndexFlatL2(dim)
-    index = faiss.IndexIVFFlat(quantizer, dim, nlist, metric_type)
+    if pq_m > 0:
+        if dim % pq_m != 0:
+            raise ValueError(
+                f"--pq-m ({pq_m}) must divide the embedding dim ({dim}) evenly"
+            )
+        # Pass metric_type explicitly: faiss.IndexIVFPQ defaults to METRIC_L2,
+        # which is wrong for the IP-normalized embeddings this index uses.
+        index = faiss.IndexIVFPQ(quantizer, dim, nlist, pq_m, pq_nbits, metric_type)
+    else:
+        index = faiss.IndexIVFFlat(quantizer, dim, nlist, metric_type)
 
     if gpu_id >= 0:
         # GPU-accelerated training: move CPU index to GPU, train, move back
@@ -250,6 +265,9 @@ def build_ivf(
         "nlist": nlist,
         "nprobe": nprobe,
         "metric": metric,
+        "index_type": "ivfpq" if pq_m > 0 else "ivfflat",
+        "pq_m": pq_m,
+        "pq_nbits": pq_nbits if pq_m > 0 else None,
         "index_file": index_path,
         "metadata_file": metadata_path,
     }
@@ -420,6 +438,20 @@ def main():
         "--nlist", type=int, default=4096, help="Number of IVF clusters (default: 4096)"
     )
     p_build.add_argument(
+        "--pq-m",
+        type=int,
+        default=0,
+        help="PQ sub-quantizers for IVFPQ compression (0 = uncompressed IVFFlat). "
+        "Must divide the embedding dim evenly; e.g. 64 for dim 2048 → 64 B/vector.",
+    )
+    p_build.add_argument(
+        "--pq-nbits",
+        type=int,
+        default=8,
+        choices=[4, 8],
+        help="Bits per PQ sub-quantizer (default: 8). Only used when --pq-m > 0.",
+    )
+    p_build.add_argument(
         "--nprobe",
         type=int,
         default=128,
@@ -515,6 +547,8 @@ def main():
                 train_sample=args.train_sample,
                 metric=args.metric,
                 gpu_id=args.gpu_id,
+                pq_m=args.pq_m,
+                pq_nbits=args.pq_nbits,
             )
     elif args.command == "test":
         test_search(args.index_dir, nprobe=args.nprobe, k=args.k)
