@@ -171,7 +171,9 @@ class Query(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    queries: list[Query]
+    # Bounded: an unbounded batch multiplies every per-query cost (embedding,
+    # image decode) on the public endpoint. Real callers send 1; 32 is generous.
+    queries: list[Query] = Field(max_length=32)
     # Bounded: fetch_k = n_docs * 10 feeds FAISS search k, so an unbounded value
     # is a trivial OOM/DoS on the public endpoint. Largest real caller uses 10.
     n_docs: int = Field(default=10, ge=1, le=1000)
@@ -271,6 +273,12 @@ class StatusResponse(BaseModel):
 
 DEFAULT_INSTRUCTION = "Retrieve images or text relevant to the user's query."
 
+# Bounds for attacker-controlled query images on the public /search endpoint.
+# ~10 MB of base64 caps the payload/decode; 25 MP caps the decoded RGB canvas
+# (query images are downscaled far below this for the VL model anyway).
+_MAX_IMAGE_B64_LEN = 10 * 1024 * 1024
+_MAX_IMAGE_PIXELS = 25_000_000
+
 
 def _parse_queries(
     queries: list[Query], instruction: str | None = None
@@ -291,8 +299,27 @@ def _parse_queries(
             img_data = q.image
             if img_data.startswith("data:"):
                 img_data = img_data.split(",", 1)[-1]
-            img_bytes = base64.b64decode(img_data)
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            # Public endpoint: q.image is attacker-controlled. Bound the payload
+            # and the decoded canvas so an oversized blob or a tiny
+            # "decompression bomb" can't OOM the service, and turn any decode
+            # failure into a clean 400 instead of an uncaught 500.
+            if len(img_data) > _MAX_IMAGE_B64_LEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"image too large (max {_MAX_IMAGE_B64_LEN} base64 chars)",
+                )
+            try:
+                img = Image.open(io.BytesIO(base64.b64decode(img_data)))
+                if img.width * img.height > _MAX_IMAGE_PIXELS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"image too large (max {_MAX_IMAGE_PIXELS} pixels)",
+                    )
+                img = img.convert("RGB")
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(status_code=400, detail="invalid image data")
             user_content.append({"type": "image", "image": img})
         if q.text:
             user_content.append({"type": "text", "text": q.text})
