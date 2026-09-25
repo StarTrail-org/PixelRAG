@@ -3,7 +3,9 @@
 Both backends are exercised against the same tiny synthetic corpus: 12
 vectors across 4 articles, two departments. The suite verifies the shared
 raw_search contract — hit shape, ranking, the article_ids pre-filter (the
-department feature), min_tile_height handling, and reconstruct().
+department feature), min_tile_height handling, and reconstruct(). FAISS runs
+twice, flat and IVF: `raw_search` takes a different filter path for an IndexIVF
+(`SearchParametersIVF`) than for a flat index, and production indexes are IVF.
 
 These run only when the heavy optional deps are installed (`[serve]` /
 `[qdrant]` extras); CI's core-only install skips them. Qdrant runs fully
@@ -21,6 +23,7 @@ from pixelrag_serve.backends import FaissBackend
 
 DIM = 8
 N_VECTORS = 12
+NLIST = 2  # IVF lists for the ivf_faiss_backend fixture
 # vector i belongs to article i // 3 (articles 0..3); departments: 0,1 -> "eng", 2,3 -> "hr"
 ARTICLE_OF = [i // 3 for i in range(N_VECTORS)]
 ENG_ARTICLES = np.asarray([0, 1])
@@ -41,11 +44,8 @@ def _make_vectors():
 VECTORS = _make_vectors()
 
 
-@pytest.fixture(scope="module")
-def faiss_backend(tmp_path_factory):
-    index_dir = tmp_path_factory.mktemp("faiss_index")
-    index = faiss.IndexFlatIP(DIM)
-    index.add(VECTORS)
+def _faiss_backend_for(index, index_dir):
+    """Write the on-disk layout FaissBackend expects and open it."""
     faiss.write_index(index, str(index_dir / "index.faiss"))
     np.savez(
         index_dir / "metadata.npz",
@@ -57,6 +57,30 @@ def faiss_backend(tmp_path_factory):
     )
     (index_dir / "summary.json").write_text(json.dumps({"backend": "faiss"}))
     return FaissBackend(str(index_dir), {"dimension": DIM})
+
+
+@pytest.fixture(scope="module")
+def faiss_backend(tmp_path_factory):
+    index = faiss.IndexFlatIP(DIM)
+    index.add(VECTORS)
+    return _faiss_backend_for(index, tmp_path_factory.mktemp("faiss_index"))
+
+
+@pytest.fixture(scope="module")
+def ivf_faiss_backend(tmp_path_factory):
+    """IVF index: production shape, and a different filter path.
+
+    `raw_search` builds `SearchParametersIVF(sel=..., nprobe=...)` for an
+    IndexIVF and plain `SearchParameters` otherwise, so a flat index alone
+    never exercises the branch real deployments run. nprobe = nlist keeps
+    results exact, so the shared contract assertions still hold.
+    """
+    quantizer = faiss.IndexFlatIP(DIM)
+    index = faiss.IndexIVFFlat(quantizer, DIM, NLIST, faiss.METRIC_INNER_PRODUCT)
+    index.train(VECTORS)
+    index.add(VECTORS)
+    index.nprobe = NLIST
+    return _faiss_backend_for(index, tmp_path_factory.mktemp("ivf_index"))
 
 
 @pytest.fixture(scope="module")
@@ -98,7 +122,7 @@ def _backends(request):
     return request.getfixturevalue(request.param)
 
 
-@pytest.fixture(params=["faiss_backend", "qdrant_backend"])
+@pytest.fixture(params=["faiss_backend", "ivf_faiss_backend", "qdrant_backend"])
 def backend(request):
     return _backends(request)
 
