@@ -63,9 +63,10 @@ def _department_of(article: dict, source_root: str) -> str:
     if not raw:
         url = article.get("url") or ""
         if url.startswith("file://"):
-            from urllib.parse import unquote, urlparse
+            from urllib.parse import urlparse
+            from urllib.request import url2pathname
 
-            raw = unquote(urlparse(url).path)
+            raw = url2pathname(urlparse(url).path)
     if not raw or not source_root:
         return ""
     try:
@@ -291,8 +292,9 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
                     "tiles": ["tile_0000.jpg"],
                     "complete": True,
                 }
-                with open(tile_dir / "tiles.json", "w") as f:
-                    json.dump(manifest, f)
+                tmp_tiles = tile_dir / "tiles.json.tmp"
+                tmp_tiles.write_text(json.dumps(manifest))
+                os.replace(tmp_tiles, tile_dir / "tiles.json")
             except Exception as e:
                 logger.warning("  FAILED image %s: %s", doc.id, e)
         logger.info("  Rendered %d local images", len(image_docs))
@@ -441,9 +443,10 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
         import numpy as np
 
         npz_files = sorted(embeddings_dir.glob("shard_*.npz"))
-        total_vectors = sum(
-            np.load(f, mmap_mode="r")["embeddings"].shape[0] for f in npz_files
-        )
+        total_vectors = 0
+        for f in npz_files:
+            with np.load(f, mmap_mode="r") as data:
+                total_vectors += data["embeddings"].shape[0]
         nlist = min(4096, max(1, total_vectors // 40))
         logger.info(
             "Stage 4/4: Building FAISS index (%d vectors, nlist=%d)...",

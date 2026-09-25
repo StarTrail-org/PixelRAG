@@ -99,6 +99,14 @@ function retrievalDown(health, onEvent, label, detail) {
   return { content: [{ type: "text", text: backendDownInstruction(detail) }], isError: true }
 }
 
+function safeDecodeURIComponent(str) {
+  try {
+    return decodeURIComponent(str)
+  } catch {
+    return str
+  }
+}
+
 function createTools(onEvent, uploadedImage, health) {
   const searchTool = tool(
     "pixelrag_search",
@@ -147,7 +155,7 @@ function createTools(onEvent, uploadedImage, health) {
       const results = hits.map((h) => {
         const slug = h.url.includes("/wiki/") ? h.url.split("/wiki/").pop() : h.url
         return {
-          title: decodeURIComponent(slug || "").replace(/_/g, " "),
+          title: safeDecodeURIComponent(slug || "").replace(/_/g, " "),
           url: h.url.startsWith("http") ? h.url : `https://en.wikipedia.org/wiki/${slug}`,
           score: Math.round(h.score * 1000) / 1000,
           article_id: h.article_id,

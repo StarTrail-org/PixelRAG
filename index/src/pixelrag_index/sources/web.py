@@ -67,7 +67,7 @@ class WebSource(Source):
         if urls_file:
             p = Path(urls_file)
             if p.exists():
-                with open(p) as f:
+                with open(p, encoding="utf-8") as f:
                     self._urls = [
                         line.strip()
                         for line in f
