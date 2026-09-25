@@ -27,7 +27,11 @@ def load_config(path=None):
         config = {}
     merged = {**DEFAULT_CONFIG, **config}
     for section in ("ingest", "embed"):
-        if section in DEFAULT_CONFIG and section in config and isinstance(config[section], dict):
+        if (
+            section in DEFAULT_CONFIG
+            and section in config
+            and isinstance(config[section], dict)
+        ):
             merged[section] = {**DEFAULT_CONFIG[section], **config[section]}
     return merged
 

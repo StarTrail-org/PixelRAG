@@ -1,15 +1,10 @@
 """Regression tests for bug fixes across configuration, rendering, indexing, and sources."""
 
 import json
-import os
-import subprocess
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 from PIL import Image
-
 from pixelrag_embed.chunk import chunk_article
 from pixelrag_index.config import DEFAULT_CONFIG, load_config
 from pixelrag_index.pipelines import _department_of
@@ -21,10 +16,7 @@ def test_load_config_deep_merge(tmp_path):
     """Deep merge ensures single-field overrides do not wipe out sibling default settings."""
     cfg_file = tmp_path / "custom.yaml"
     cfg_file.write_text(
-        "embed:\n"
-        "  device: cpu\n"
-        "ingest:\n"
-        "  quality: 92\n",
+        "embed:\n  device: cpu\ningest:\n  quality: 92\n",
         encoding="utf-8",
     )
     loaded = load_config(str(cfg_file))

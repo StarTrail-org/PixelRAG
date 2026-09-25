@@ -246,7 +246,11 @@ class KiwixServeManager:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             try:
-                if hasattr(os, "killpg") and hasattr(os, "getpgid") and hasattr(signal, "SIGKILL"):
+                if (
+                    hasattr(os, "killpg")
+                    and hasattr(os, "getpgid")
+                    and hasattr(signal, "SIGKILL")
+                ):
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 else:
                     proc.kill()
