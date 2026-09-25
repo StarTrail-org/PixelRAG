@@ -639,8 +639,15 @@ async def departments():
     }
 
 
+# Bound for the public /reconstruct endpoint: every id returns a full
+# `dimension`-length float list, which serializes to ~40 KB of JSON at dim 2048,
+# and the first call builds a direct map over the whole index. Real callers
+# debug a handful of vectors at a time.
+_MAX_RECONSTRUCT_IDS = 256
+
+
 class ReconstructRequest(BaseModel):
-    vector_ids: list[int | str]
+    vector_ids: list[int | str] = Field(max_length=_MAX_RECONSTRUCT_IDS)
 
 
 @app.post("/reconstruct")

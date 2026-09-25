@@ -161,5 +161,16 @@ def test_reconstruct_round_trips(backend):
     np.testing.assert_allclose(np.asarray(vecs[1]), VECTORS[5], atol=1e-6)
 
 
+def test_reconstruct_unknown_id_is_none(backend):
+    # Both backends report an id they don't hold as None rather than raising —
+    # /reconstruct is public, so an unknown id must not become a 500.
+    assert backend.reconstruct([1, 10**6])[1:] == [None]
+
+
+def test_reconstruct_non_integer_id_is_none(faiss_backend):
+    # FAISS ids are integers; a non-numeric id is a client mistake, not a crash.
+    assert faiss_backend.reconstruct(["not-an-id"]) == [None]
+
+
 def test_k_zero_returns_empty(backend):
     assert backend.raw_search(VECTORS[0:1], 0) == [[]]
