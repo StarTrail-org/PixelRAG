@@ -53,6 +53,21 @@ MINIMAX_ENDPOINTS = {
 }
 
 
+def get_atlascloud_config(
+    model_name: str, api_key: str | None = None
+) -> Dict[str, Any]:
+    """Resolve an explicitly selected Atlas Cloud reader without native routing."""
+    if not api_key or api_key == "dummy":
+        api_key = os.getenv("ATLASCLOUD_API_KEY")
+    if not api_key or not api_key.strip() or api_key == "dummy":
+        raise ValueError("Atlas Cloud requires --api-key or ATLASCLOUD_API_KEY.")
+    return {
+        "api_base": "https://api.atlascloud.ai/v1",
+        "api_key": api_key,
+        "model": model_name,
+    }
+
+
 def get_model_config(model_name: str) -> Dict[str, Any]:
     """
     Get model configuration based on model name.
