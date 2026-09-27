@@ -1,13 +1,17 @@
 """Regression tests for bug fixes across configuration, rendering, indexing, and sources."""
 
 import json
+import signal
 import sys
+import types
+from unittest import mock
 from unittest.mock import MagicMock
 
 from PIL import Image
 from pixelrag_embed.chunk import chunk_article
 from pixelrag_index.config import DEFAULT_CONFIG, load_config
 from pixelrag_index.pipelines import _department_of
+from pixelrag_index.sources import kiwix as kiwix_module
 from pixelrag_index.sources.kiwix import KiwixServeManager
 from pixelrag_index.sources.local import LocalSource
 
@@ -86,15 +90,57 @@ def test_pixelshot_forwards_extract_text_for_html(monkeypatch, tmp_path):
     assert called_kwargs.get("extract_text") is True
 
 
-def test_kiwix_kill_proc_cross_platform():
-    """KiwixServeManager._kill_proc safely terminates process without os.killpg AttributeError."""
-    mgr = KiwixServeManager.__new__(KiwixServeManager)
-    mock_proc = MagicMock()
-    mock_proc.poll.return_value = None
+def test_kiwix_kill_proc_posix_signals_the_process_group():
+    """POSIX path signals the child's group -- with os patched, not for real.
 
-    # Should not raise AttributeError on Windows where os.killpg is absent
-    mgr._kill_proc(mock_proc)
-    assert mock_proc.terminate.called or mock_proc.wait.called
+    A MagicMock's ``.pid`` satisfies ``__index__`` as 1, so calling the real
+    ``os.getpgid``/``os.killpg`` here sends SIGTERM to a live process group on
+    the host. Under CI that is the runner's own group: the job dies with exit
+    143 ("the runner has received a shutdown signal") partway through this
+    file, which reads as an unrelated infrastructure flake. Patch both calls
+    and assert on them instead.
+    """
+    mgr = KiwixServeManager.__new__(KiwixServeManager)
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+
+    with (
+        mock.patch.object(kiwix_module.os, "getpgid", return_value=4242) as getpgid,
+        mock.patch.object(kiwix_module.os, "killpg") as killpg,
+    ):
+        mgr._kill_proc(proc)
+
+    getpgid.assert_called_once_with(4242)
+    killpg.assert_called_once_with(4242, signal.SIGTERM)
+    proc.wait.assert_called_once()
+
+
+def test_kiwix_kill_proc_without_killpg_falls_back_to_terminate():
+    """Windows path: no os.killpg, so terminate() instead of an AttributeError."""
+    mgr = KiwixServeManager.__new__(KiwixServeManager)
+    proc = MagicMock()
+    proc.poll.return_value = None
+
+    windows_os = types.SimpleNamespace(path=kiwix_module.os.path)
+    with mock.patch.object(kiwix_module, "os", windows_os):
+        mgr._kill_proc(proc)
+
+    proc.terminate.assert_called_once()
+    proc.wait.assert_called_once()
+
+
+def test_kiwix_kill_proc_skips_an_already_exited_process():
+    """poll() returning an exit status means there is nothing left to signal."""
+    mgr = KiwixServeManager.__new__(KiwixServeManager)
+    proc = MagicMock()
+    proc.poll.return_value = 0
+
+    with mock.patch.object(kiwix_module.os, "killpg") as killpg:
+        mgr._kill_proc(proc)
+
+    killpg.assert_not_called()
+    proc.terminate.assert_not_called()
 
 
 def test_chunk_article_converts_jpeg_to_png(tmp_path):
