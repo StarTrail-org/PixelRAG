@@ -279,6 +279,10 @@ DEFAULT_INSTRUCTION = "Retrieve images or text relevant to the user's query."
 _MAX_IMAGE_B64_LEN = 10 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 25_000_000
 
+# Most on-demand renders one /search request may trigger (see the search handler).
+# A real caller asks for n_docs=10 with include_images, so this is generous.
+_MAX_ONDEMAND_RENDERS = 16
+
 
 def _parse_queries(
     queries: list[Query], instruction: str | None = None
@@ -540,6 +544,18 @@ async def search(req: SearchRequest, request: Request):
     # Build results
     tiles_dir = _state.get("tiles_dir", "")
 
+    # Budget for on-demand renders across the whole request. A render is a
+    # Chrome page load under a process-global lock, bounded only by
+    # PIXELRAG_RENDER_TIMEOUT (120s by default), and nothing else caps how many
+    # one request can ask for: at this endpoint's own limits (32 queries,
+    # n_docs <= 1000) a single include_images request could queue tens of
+    # thousands of them, stalling every other caller's renders behind the same
+    # lock. Past the budget a hit is returned without its image — what a failed
+    # render or a missing tile already yields — and the client can still fetch
+    # it from /tile. Cache hits are cheap and don't spend the budget.
+    ondemand = _state.get("ondemand")
+    renders_left = _MAX_ONDEMAND_RENDERS
+
     results = []
     for qi in range(len(req.queries)):
         hits = []
@@ -559,11 +575,17 @@ async def search(req: SearchRequest, request: Request):
             if req.include_images and tile_path and os.path.exists(tile_path):
                 with open(tile_path, "rb") as fp:
                     img_b64 = base64.b64encode(fp.read()).decode()
-            elif req.include_images and _state.get("ondemand") is not None:
-                # Render off the event loop: _ondemand_chunk_b64 -> render_url uses
-                # asyncio.run(), which raises "cannot be called from a running event
-                # loop" if invoked directly here. Offload to a worker thread.
-                img_b64 = await asyncio.to_thread(_ondemand_chunk_b64, aid, ti, ci, th)
+            elif req.include_images and ondemand is not None:
+                cached = ondemand.cached_chunk_path(aid, ti, ci) is not None
+                if cached or renders_left > 0:
+                    if not cached:
+                        renders_left -= 1
+                    # Render off the event loop: _ondemand_chunk_b64 -> render_url uses
+                    # asyncio.run(), which raises "cannot be called from a running event
+                    # loop" if invoked directly here. Offload to a worker thread.
+                    img_b64 = await asyncio.to_thread(
+                        _ondemand_chunk_b64, aid, ti, ci, th
+                    )
             # Expose a relative tile path, not the absolute server filesystem
             # path (avoids leaking the host's directory layout; clients fetch
             # tiles via /tile/{article_id}/{tile_index}/{chunk_index}).
