@@ -74,6 +74,7 @@ from lib.benchmarks import (
 from lib.model_config import (
     ORCAROUTER_API_BASE,
     get_atlascloud_config,
+    get_cheaperinference_config,
     get_model_config,
     get_output_filename,
 )
@@ -958,11 +959,12 @@ async def run_async(args):
         )
 
     # Get model configuration
-    model_config = (
-        get_atlascloud_config(args.model, args.api_key)
-        if args.atlascloud
-        else get_model_config(args.model)
-    )
+    if args.atlascloud:
+        model_config = get_atlascloud_config(args.model, args.api_key)
+    elif args.cheaperinference:
+        model_config = get_cheaperinference_config(args.model, args.api_key)
+    else:
+        model_config = get_model_config(args.model)
 
     # Handle OpenRouter API
     if args.atlascloud:
@@ -970,6 +972,11 @@ async def run_async(args):
         api_key = model_config["api_key"]
         model = model_config["model"]
         logger.info(f"Using Atlas Cloud API with model: {model}")
+    elif args.cheaperinference:
+        api_base = model_config["api_base"]
+        api_key = model_config["api_key"]
+        model = model_config["model"]
+        logger.info(f"Using Cheaper Inference API with model: {model}")
     elif args.open_router:
         api_base = "https://openrouter.ai/api/v1"
         if args.api_key and args.api_key != "dummy":
@@ -1144,7 +1151,11 @@ async def run_async(args):
         timeout=args.timeout,
         enable_thinking=(False if args.no_think else None),
         force_openai_compat=(
-            args.open_router or args.commonstack or args.orcarouter or args.atlascloud
+            args.open_router
+            or args.commonstack
+            or args.orcarouter
+            or args.atlascloud
+            or args.cheaperinference
         ),
         use_litellm=args.litellm,
         retry_requests=not args.atlascloud,
@@ -1373,6 +1384,11 @@ def main():
         "--atlascloud",
         action="store_true",
         help="Use Atlas Cloud with an exact catalog model ID. Requires --api-key or ATLASCLOUD_API_KEY.",
+    )
+    parser.add_argument(
+        "--cheaperinference",
+        action="store_true",
+        help="Use Cheaper Inference (https://api.cheaperinference.com/v1) with a bare model ID. Requires --api-key or CHEAPER_INFERENCE_API_KEY.",
     )
     parser.add_argument(
         "--litellm",
@@ -1932,6 +1948,16 @@ def main():
         parser.error("--atlascloud cannot be combined with another provider flag")
     if args.atlascloud and args.api_base:
         parser.error("--atlascloud uses its fixed endpoint; omit --api-base")
+    if args.cheaperinference and (
+        args.open_router
+        or args.commonstack
+        or args.orcarouter
+        or args.atlascloud
+        or args.litellm
+    ):
+        parser.error("--cheaperinference cannot be combined with another provider flag")
+    if args.cheaperinference and args.api_base:
+        parser.error("--cheaperinference uses its fixed endpoint; omit --api-base")
 
     # Validate mutually exclusive options
     mode_count = sum(

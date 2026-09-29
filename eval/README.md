@@ -194,6 +194,28 @@ with another provider flag or `--api-base`.
 Atlas requests are not automatically retried, including timeouts, connection
 errors and rate limits, to avoid duplicating billable generation requests.
 
+## Cheaper Inference readers
+
+[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible LLM gateway.
+Each model costs 15–60% less than the list price of its lab.
+
+Select it explicitly with `--cheaperinference`; other readers are unchanged.
+Set `CHEAPER_INFERENCE_API_KEY` and use a bare model ID from the
+[model list](https://cheaperinference.com/#models):
+
+```bash
+export CHEAPER_INFERENCE_API_KEY=ci_live_...
+python run_bench.py --task simpleqa --model gpt-5.4-mini \
+    --cheaperinference --num-examples 1 --max-concurrent 1 --max-tokens 256
+```
+
+This text-only example does not use retrieval. For screenshot benchmarks, use
+`gpt-5.4-mini` or `gpt-5.4`, which accept image input. Model IDs are forwarded
+unchanged to `https://api.cheaperinference.com/v1` and never select the native
+Google SDK. `--api-key` overrides `CHEAPER_INFERENCE_API_KEY`, and other providers'
+environment keys are never used. Do not combine this option with another provider
+flag or `--api-base`.
+
 ## MiniMax readers
 
 Set `MINIMAX_API_KEY` and select either registered model ID. The model context length

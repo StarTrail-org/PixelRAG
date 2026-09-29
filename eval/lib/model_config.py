@@ -68,6 +68,23 @@ def get_atlascloud_config(
     }
 
 
+def get_cheaperinference_config(
+    model_name: str, api_key: str | None = None
+) -> Dict[str, Any]:
+    """Resolve an explicitly selected Cheaper Inference reader without native routing."""
+    if not api_key or api_key == "dummy":
+        api_key = os.getenv("CHEAPER_INFERENCE_API_KEY")
+    if not api_key or not api_key.strip() or api_key == "dummy":
+        raise ValueError(
+            "Cheaper Inference requires --api-key or CHEAPER_INFERENCE_API_KEY."
+        )
+    return {
+        "api_base": "https://api.cheaperinference.com/v1",
+        "api_key": api_key,
+        "model": model_name,
+    }
+
+
 def get_model_config(model_name: str) -> Dict[str, Any]:
     """
     Get model configuration based on model name.
