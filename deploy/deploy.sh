@@ -45,8 +45,8 @@ if changed '^uv\.lock$'; then
 fi
 
 # 2. Agent backend — cheap restart, safe to automate.
-if changed '^web/agent-server\.mjs$'; then
-  say "agent-server.mjs changed -> restart pixelrag-agent"
+if changed '^web/(agent-server\.mjs|lib/(agent-tools|codex-backend|codex-mcp|retrieval-health)\.mjs)$'; then
+  say "agent backend changed -> restart pixelrag-agent"
   sudo systemctl restart pixelrag-agent.service
   sleep 2
   say "pixelrag-agent: $(systemctl is-active pixelrag-agent.service)"
