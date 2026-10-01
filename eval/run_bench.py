@@ -73,6 +73,7 @@ from lib.benchmarks import (
 )
 from lib.model_config import (
     ORCAROUTER_API_BASE,
+    get_api_route_config,
     get_atlascloud_config,
     get_cheaperinference_config,
     get_model_config,
@@ -963,6 +964,8 @@ async def run_async(args):
         model_config = get_atlascloud_config(args.model, args.api_key)
     elif args.cheaperinference:
         model_config = get_cheaperinference_config(args.model, args.api_key)
+    elif args.api_route:
+        model_config = get_api_route_config(args.model, args.api_key)
     else:
         model_config = get_model_config(args.model)
 
@@ -977,6 +980,11 @@ async def run_async(args):
         api_key = model_config["api_key"]
         model = model_config["model"]
         logger.info(f"Using Cheaper Inference API with model: {model}")
+    elif args.api_route:
+        api_base = model_config["api_base"]
+        api_key = model_config["api_key"]
+        model = model_config["model"]
+        logger.info(f"Using API Route API with model: {model}")
     elif args.open_router:
         api_base = "https://openrouter.ai/api/v1"
         if args.api_key and args.api_key != "dummy":
@@ -1162,9 +1170,10 @@ async def run_async(args):
             or args.orcarouter
             or args.atlascloud
             or args.cheaperinference
+            or args.api_route
         ),
         use_litellm=args.litellm,
-        retry_requests=not args.atlascloud,
+        retry_requests=not (args.atlascloud or args.api_route),
     )
 
     # 3b. Create pixel-compressed encoder for generation if requested
@@ -1403,6 +1412,11 @@ def main():
         "--cheaperinference",
         action="store_true",
         help="Use Cheaper Inference (https://api.cheaperinference.com/v1) with a bare model ID. Requires --api-key or CHEAPER_INFERENCE_API_KEY.",
+    )
+    parser.add_argument(
+        "--api-route",
+        action="store_true",
+        help="Use API Route with an exact catalog model ID. Requires --api-key or API_ROUTE_API_KEY.",
     )
     parser.add_argument(
         "--litellm",
@@ -1972,6 +1986,18 @@ def main():
         parser.error("--cheaperinference cannot be combined with another provider flag")
     if args.cheaperinference and args.api_base:
         parser.error("--cheaperinference uses its fixed endpoint; omit --api-base")
+
+    if args.api_route and (
+        args.open_router
+        or args.commonstack
+        or args.orcarouter
+        or args.atlascloud
+        or args.cheaperinference
+        or args.litellm
+    ):
+        parser.error("--api-route cannot be combined with another provider flag")
+    if args.api_route and args.api_base:
+        parser.error("--api-route uses its fixed endpoint; omit --api-base")
 
     # Validate mutually exclusive options
     mode_count = sum(
