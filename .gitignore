@@ -47,3 +47,8 @@ node_modules/
 tmp/
 demos/demo_tiles/
 assets/*.mp4
+
+# Research knowledge base (local only — papers are large & copyrighted, indexes are generated)
+papers/
+knowledge_index/
+e2e_test/index/

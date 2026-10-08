@@ -711,7 +711,9 @@ def load(args):
     import torch
 
     device = args.device
-    dtype = torch.float32 if device == "cpu" else torch.bfloat16
+    # 本机 16GB 内存:CPU 也用 bfloat16(4GB),与 embed 阶段一致。float32(8GB)
+    # 会挤爆内存并把模型权重换出到 pagefile,导致单次查询被拖到几十分钟。
+    dtype = torch.bfloat16
 
     # Load summary (index loading itself lives in the backend: FaissBackend
     # honors PIXELRAG_INDEX_MMAP for memory-mapped multi-100G indexes).

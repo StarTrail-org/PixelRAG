@@ -213,7 +213,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
                 if not _needs_render(tiles_dir, idx, doc):
                     continue
                 src_path = Path(doc.path)
-                content = src_path.read_text(errors="replace")
+                content = src_path.read_text(encoding="utf-8", errors="replace")
                 ext = (doc.metadata or {}).get("extension", src_path.suffix.lower())
                 if ext == ".md":
                     body = md_lib.markdown(
@@ -224,7 +224,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
                 body = _resolve_relative_paths(body, str(src_path.parent))
                 html_content = f"{_HTML_TEMPLATE}{body}</body></html>"
                 html_path = Path(tmp_dir) / f"{idx}.html"
-                html_path.write_text(html_content)
+                html_path.write_text(html_content, encoding="utf-8")
                 text_urls.append(f"file://{html_path.resolve()}")
                 text_stems.append(str(idx))
 
@@ -349,7 +349,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
         article_entries.append(
             {"title": title, "url": url, "department": _department_of(a, source_root)}
         )
-    with open(articles_path, "w") as f:
+    with open(articles_path, "w", encoding="utf-8") as f:
         json.dump(article_entries, f)
     logger.info(
         "  Saved %d article mappings to %s", len(article_entries), articles_path

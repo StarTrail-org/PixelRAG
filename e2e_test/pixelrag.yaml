@@ -1,0 +1,9 @@
+source:
+  type: local
+  path: D:/ccproject/PixelRAG/e2e_test/test.pdf
+
+embed:
+  model: Qwen/Qwen3-VL-Embedding-2B
+  device: cpu
+
+output: D:/ccproject/PixelRAG/e2e_test/index
