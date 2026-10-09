@@ -254,6 +254,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     # Render local images (PNG/JPG) — copy/resize into the tile directory structure
     if image_docs:
         from PIL import Image as PILImage
+        from PIL import ImageOps
 
         _MAX_WIDTH = 4000  # cap large images to avoid VRAM pressure during embedding
 
@@ -263,7 +264,9 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             tile_dir = tiles_dir / f"{idx}.png.tiles"
             tile_dir.mkdir(parents=True, exist_ok=True)
             try:
-                img = PILImage.open(doc.path)
+                # Apply the display orientation before measuring or resizing pixels.
+                with PILImage.open(doc.path) as source_image:
+                    img = ImageOps.exif_transpose(source_image)
                 # JPEG has no alpha: composite transparent images onto white
                 # before dropping the channel. A bare convert("RGB") maps
                 # fully-transparent pixels to their underlying RGB — black for
