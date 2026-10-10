@@ -2,16 +2,21 @@
 /**
  * PixelRAG Agent backend — standalone SSE server.
  *
- * Runs the Claude Agent SDK with subscription auth (uses the logged-in
+ * Select CHAT_BACKEND=codex for the logged-in Codex CLI, or claude for the
+ * Claude Agent SDK with subscription auth (uses the logged-in
  * `claude` CLI on this machine — no ANTHROPIC_API_KEY needed). Exposes the
  * same agent loop + pixelrag tools as the Next.js /api/chat route, so the
  * deployed Vercel frontend can proxy to it instead of running the SDK in
  * serverless (where the native CLI binary and credentials don't exist).
  *
- * Run on a machine where `claude` is logged in:
- *     node deploy/agent-server.mjs
+ * Run on a machine where the selected CLI is logged in:
+ *     CHAT_BACKEND=codex node web/agent-server.mjs
  *
  * Env:
+ *     CHAT_BACKEND        claude (default) or codex
+ *     CODEX_BIN           Codex CLI executable (default codex on PATH)
+ *     CHAT_CODEX_MODEL    optional model override; otherwise CLI default
+ *     CHAT_CODEX_TIMEOUT_MS  per-request wall time (default 180000)
  *     AGENT_PORT          listen port (default 30010)
  *     PIXELRAG_SEARCH_URL search API base (default http://localhost:30001)
  *     CHAT_MAX_BUDGET_USD per-conversation budget cap (default 0.50)
@@ -19,21 +24,15 @@
  */
 
 import http from "node:http"
-import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
-import { z } from "zod"
+import { createTools } from "./lib/agent-tools.mjs"
+import { runCodex, codexTool } from "./lib/codex-backend.mjs"
 
-import {
-  RETRIEVAL_OK,
-  RETRIEVAL_BACKEND_DOWN,
-  classifyStatus,
-  classifyThrow,
-  createRetrievalHealth,
-  recordRetrieval,
-  isUngrounded,
-  backendDownInstruction,
-  UNGROUNDED_CLIENT_MESSAGE,
-} from "./lib/retrieval-health.mjs"
+import { createRetrievalHealth, isUngrounded, UNGROUNDED_CLIENT_MESSAGE } from "./lib/retrieval-health.mjs"
 
+const BACKEND = process.env.CHAT_BACKEND || "claude"
+if (!["claude", "codex"].includes(BACKEND)) throw new Error("CHAT_BACKEND must be claude or codex")
+const { query, tool, createSdkMcpServer } = BACKEND === "claude"
+  ? await import("@anthropic-ai/claude-agent-sdk") : {}
 const PORT = parseInt(process.env.AGENT_PORT || "30010", 10)
 const SEARCH_URL = process.env.PIXELRAG_SEARCH_URL || "https://api.pixelrag.ai"
 const MAX_BUDGET = parseFloat(process.env.CHAT_MAX_BUDGET_USD || "2.00")
@@ -90,122 +89,6 @@ function log(...args) {
   console.log(new Date().toISOString(), ...args)
 }
 
-// An unreachable index is not information for the model to work around: it
-// ends the turn. Recorded on the turn's health so the stream can close as
-// degraded instead of done.
-function retrievalDown(health, onEvent, label, detail) {
-  recordRetrieval(health, RETRIEVAL_BACKEND_DOWN, detail)
-  onEvent("search_unavailable", { query: label, reason: detail })
-  return { content: [{ type: "text", text: backendDownInstruction(detail) }], isError: true }
-}
-
-function safeDecodeURIComponent(str) {
-  try {
-    return decodeURIComponent(str)
-  } catch {
-    return str
-  }
-}
-
-function createTools(onEvent, uploadedImage, health) {
-  const searchTool = tool(
-    "pixelrag_search",
-    "Search the visual Wikipedia index by text, by the user's uploaded image, or BOTH combined. When the user uploaded an image, you MUST set use_uploaded_image=true AND provide a text query to get joint image+text retrieval — this gives the best results. Returns ranked results with article URLs, tile positions, and `pages` — the article's valid tile:chunk ranges (e.g. '0:0-7,1:0-4' = tile 0 has chunks 0-7, tile 1 has chunks 0-4). Use this first, then pixelrag_tile to view tiles.",
-    {
-      query: z.string().optional().describe("Natural language search query. Omit only when searching purely by an uploaded image."),
-      use_uploaded_image: z.boolean().optional().describe("Set true to include the user's uploaded image in the search (visual similarity). ALWAYS combine with a text query for best results — set this AND provide a query string in the same call."),
-      n_results: z.number().int().min(1).max(20).optional().describe("Number of results (default 5)"),
-    },
-    async (args) => {
-      if (args.use_uploaded_image && !uploadedImage) {
-        return { content: [{ type: "text", text: "No image was uploaded in this conversation — use a text query instead." }] }
-      }
-      const searchByImage = Boolean(args.use_uploaded_image && uploadedImage)
-      if (!searchByImage && !args.query) {
-        return { content: [{ type: "text", text: "Provide a text query, or set use_uploaded_image:true when the user uploaded an image." }] }
-      }
-      // Text and image can be combined in one query for joint image+text retrieval.
-      const queryObj = {}
-      if (searchByImage) queryObj.image = uploadedImage
-      if (args.query) queryObj.text = args.query
-      const label = searchByImage && args.query ? `${args.query} + uploaded image` : args.query || "uploaded image"
-      onEvent("searching", { query: label })
-      let resp
-      try {
-        resp = await fetch(`${SEARCH_URL}/search`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Source": "chat" },
-          body: JSON.stringify({ queries: [queryObj], n_docs: args.n_results ?? 5, articles_only: true }),
-          signal: AbortSignal.timeout(30000),
-        })
-      } catch (err) {
-        return retrievalDown(health, onEvent, label, String(err))
-      }
-      const outcome = classifyStatus(resp.status)
-      if (outcome === RETRIEVAL_BACKEND_DOWN) {
-        return retrievalDown(health, onEvent, label, `HTTP ${resp.status}`)
-      }
-      if (outcome !== RETRIEVAL_OK) {
-        recordRetrieval(health, outcome, `HTTP ${resp.status}`)
-        return { content: [{ type: "text", text: `Search API error: ${resp.status}` }] }
-      }
-      recordRetrieval(health, RETRIEVAL_OK)
-      const data = await resp.json()
-      const hits = data.results?.[0]?.hits ?? []
-      const results = hits.map((h) => {
-        const slug = h.url.includes("/wiki/") ? h.url.split("/wiki/").pop() : h.url
-        return {
-          title: safeDecodeURIComponent(slug || "").replace(/_/g, " "),
-          url: h.url.startsWith("http") ? h.url : `https://en.wikipedia.org/wiki/${slug}`,
-          score: Math.round(h.score * 1000) / 1000,
-          article_id: h.article_id,
-          tile_index: h.tile_index,
-          chunk_index: h.chunk_index,
-          pages: h.article_pages,
-        }
-      })
-      onEvent("search_results", { query: label, hits })
-      return {
-        content: [{ type: "text", text: JSON.stringify({ query: label, results, count: results.length }, null, 2) }],
-      }
-    }
-  )
-
-  const tileTool = tool(
-    "pixelrag_tile",
-    "View a Wikipedia screenshot tile by its coordinates. Returns the tile as an image so you can read the visual content. Only request coordinates within the article's `pages` ranges from search results (e.g. pages '0:0-7,1:0-4' means tile 1 ends at chunk 4) — coordinates beyond them do not exist.",
-    {
-      article_id: z.number().int().describe("Article ID from search results"),
-      tile_index: z.number().int().describe("Tile index from search results"),
-      chunk_index: z.number().int().describe("Chunk index from search results"),
-    },
-    async (args) => {
-      const tileUrl = `${SEARCH_URL}/tile/${args.article_id}/${args.tile_index}/${args.chunk_index}`
-      try {
-        const resp = await fetch(tileUrl, { signal: AbortSignal.timeout(30000) })
-        // The agent pages through articles by guessing chunk coordinates, so
-        // 404s are normal exploration — only surface tiles that actually load,
-        // otherwise the chat gallery renders broken images.
-        if (!resp.ok) {
-          if (classifyStatus(resp.status) === RETRIEVAL_BACKEND_DOWN) {
-            recordRetrieval(health, RETRIEVAL_BACKEND_DOWN, `tile HTTP ${resp.status}`)
-          }
-          return { content: [{ type: "text", text: `Tile not found: ${resp.status}` }] }
-        }
-        onEvent("viewing_tile", { article_id: args.article_id, tile_index: args.tile_index, chunk_index: args.chunk_index })
-        const buffer = await resp.arrayBuffer()
-        const base64 = Buffer.from(buffer).toString("base64")
-        const mimeType = resp.headers.get("content-type") || "image/png"
-        return { content: [{ type: "image", data: base64, mimeType }] }
-      } catch (err) {
-        recordRetrieval(health, classifyThrow(err), `tile ${err}`)
-        return { content: [{ type: "text", text: `Failed to fetch tile: ${err}` }] }
-      }
-    }
-  )
-
-  return [searchTool, tileTool]
-}
 
 function sse(event, data) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
@@ -220,7 +103,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" })
-    res.end(JSON.stringify({ status: "ok" }))
+    res.end(JSON.stringify({ status: "ok", backend: BACKEND }))
     return
   }
 
@@ -316,40 +199,47 @@ const server = http.createServer(async (req, res) => {
     const send = (event, data) => res.write(sse(event, data))
     const uploadedImage = last?.image && typeof last.image === "string" ? last.image : null
     const health = createRetrievalHealth()
-    const tools = createTools(send, uploadedImage, health)
-    const mcpServer = createSdkMcpServer({ name: "pixelrag", version: "1.0.0", tools })
+    const tools = createTools(send, uploadedImage, health, BACKEND === "codex" ? codexTool : tool, SEARCH_URL)
 
+    const controller = new AbortController()
+    res.on("close", () => controller.abort())
     inFlight++
     let sentText = false
     try {
-      for await (const message of query({
-        prompt,
-        options: {
-          systemPrompt: SYSTEM_PROMPT,
-          mcpServers: { pixelrag: mcpServer },
-          allowedTools: ["mcp__pixelrag__pixelrag_search", "mcp__pixelrag__pixelrag_tile"],
-          maxTurns: MAX_TURNS,
-          maxBudgetUsd: MAX_BUDGET,
-          maxThinkingTokens: THINKING_TOKENS,
-          includePartialMessages: true,
-          model: "sonnet",
-        },
-      })) {
-        // Stream extended-thinking deltas (Claude Code-style reasoning trace)
-        if (message.type === "stream_event") {
-          const ev = message.event
-          if (ev?.type === "content_block_delta" && ev.delta?.type === "thinking_delta") {
-            send("thinking", { text: ev.delta.thinking })
+      if (BACKEND === "codex") {
+        await runCodex({ textPrompt, uploadedImage, systemPrompt: SYSTEM_PROMPT, tools, send, signal: controller.signal, maxToolCalls: MAX_TURNS })
+        sentText = true
+      } else {
+        const mcpServer = createSdkMcpServer({ name: "pixelrag", version: "1.0.0", tools })
+        for await (const message of query({
+          prompt,
+          options: {
+            systemPrompt: SYSTEM_PROMPT,
+            mcpServers: { pixelrag: mcpServer },
+            allowedTools: ["mcp__pixelrag__pixelrag_search", "mcp__pixelrag__pixelrag_tile"],
+            maxTurns: MAX_TURNS,
+            maxBudgetUsd: MAX_BUDGET,
+            maxThinkingTokens: THINKING_TOKENS,
+            includePartialMessages: true,
+            model: "sonnet",
+          },
+        })) {
+          // Stream extended-thinking deltas (Claude Code-style reasoning trace)
+          if (message.type === "stream_event") {
+            const ev = message.event
+            if (ev?.type === "content_block_delta" && ev.delta?.type === "thinking_delta") {
+              send("thinking", { text: ev.delta.thinking })
+            }
+            continue
           }
-          continue
-        }
-        if (message.type === "assistant" && message.message) {
-          for (const block of message.message.content) {
-            if (block.type === "text" && block.text) { send("text", { text: block.text }); sentText = true }
+          if (message.type === "assistant" && message.message) {
+            for (const block of message.message.content) {
+              if (block.type === "text" && block.text) { send("text", { text: block.text }); sentText = true }
+            }
           }
-        }
-        if (message.type === "result" && message.subtype === "success" && !sentText) {
-          send("text", { text: message.result })
+          if (message.type === "result" && message.subtype === "success" && !sentText) {
+            send("text", { text: message.result })
+          }
         }
       }
       const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
@@ -387,5 +277,5 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, () => {
-  log(`PixelRAG agent server on :${PORT} → search ${SEARCH_URL}, budget $${MAX_BUDGET}/conv`)
+  log(`PixelRAG ${BACKEND} agent server on :${PORT} → search ${SEARCH_URL}, ${BACKEND === "codex" ? "Codex timeout " + (process.env.CHAT_CODEX_TIMEOUT_MS || 180000) + "ms" : "budget $" + MAX_BUDGET + "/conv"}`)
 })
