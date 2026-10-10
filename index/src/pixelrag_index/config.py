@@ -21,11 +21,19 @@ def load_config(path=None):
                 path = str(c)
                 break
     if path and os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
     else:
         config = {}
-    return {**DEFAULT_CONFIG, **config}
+    merged = {**DEFAULT_CONFIG, **config}
+    for section in ("ingest", "embed"):
+        if (
+            section in DEFAULT_CONFIG
+            and section in config
+            and isinstance(config[section], dict)
+        ):
+            merged[section] = {**DEFAULT_CONFIG[section], **config[section]}
+    return merged
 
 
 def make_source(config):
@@ -33,6 +41,6 @@ def make_source(config):
     source_type = source_config.pop("type", "local")
     # Expand ~ in any string values that look like paths
     for k, v in source_config.items():
-        if isinstance(v, str) and ("/" in v or "~" in v):
+        if isinstance(v, str) and ("/" in v or "\\" in v or "~" in v):
             source_config[k] = str(Path(v).expanduser())
     return SOURCES[source_type](**source_config)

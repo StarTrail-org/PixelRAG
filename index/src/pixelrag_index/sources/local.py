@@ -35,7 +35,7 @@ class LocalSource(Source):
             if ftype == "web":
                 yield Document(
                     id=f.stem,
-                    url=f"file://{f.resolve()}",
+                    url=f.resolve().as_uri(),
                     metadata={"type": ftype},
                 )
             elif ftype == "text":

@@ -376,6 +376,7 @@ def main() -> None:
                     viewport_width=args.viewport_width,
                     workers=1,
                     wait_network_idle=args.wait_network_idle,
+                    extract_text=args.extract_text,
                     cdp_url=args.cdp_url,
                 )
             elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:

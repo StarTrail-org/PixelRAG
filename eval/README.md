@@ -172,6 +172,68 @@ text-only text retrieval.
 PYTHONPATH=. .venv/bin/python -m lib.grader <task> <responses.jsonl>
 ```
 
+## 6. Exporting the frozen-retrieval benchmark
+
+[`StarTrail-org/pixelrag-bench`](https://huggingface.co/datasets/StarTrail-org/pixelrag-bench)
+holds the LoRA cells' questions with their top-5 retrieved tiles, so a reader can be scored
+without a search serve. It is produced in two steps:
+
+```bash
+# 1. retrieve only (no reader); resumable, one directory per bench
+LORA_URL=http://localhost:30096/search bash dump_bench.sh <nq|nqt|sqa|mms|evqa> <out_root>
+# 2. pack into one Parquet config per bench, images embedded
+.venv/bin/python pack_bench.py <out_root> <pack_dir> --commit <sha>
+```
+
+`dump_bench.sh` runs `run_bench.py --dump-retrieval` with the same example sets, query
+images, instruction and nprobe as the LoRA cells of `reproduce.sh`. A hit whose tile is
+absent on the serve's disk is still recorded and listed in `<bench>/missing_tiles.jsonl`;
+`pack_bench.py` refuses to pack until each is filled, or listed in `--allow-missing` as lost.
+
+## Atlas Cloud readers
+
+Select Atlas Cloud explicitly with `--atlascloud`; other readers are unchanged.
+Set `ATLASCLOUD_API_KEY` and use an exact model ID from the
+[live catalog](https://api.atlascloud.ai/api/v1/models):
+
+```bash
+export ATLASCLOUD_API_KEY=your-api-key
+python run_bench.py --task simpleqa --model deepseek-ai/deepseek-v3.2 \
+    --atlascloud --num-examples 1 --max-concurrent 1 --max-tokens 256
+```
+
+This text-only example does not use retrieval. For screenshot benchmarks, select
+a model supporting image input. Model IDs are forwarded unchanged to
+`https://api.atlascloud.ai/v1`, including IDs containing `gemini`; they do not
+select the native Google SDK. `--api-key` overrides `ATLASCLOUD_API_KEY`, and
+other providers' environment keys are never used. Do not combine this option
+with another provider flag or `--api-base`.
+
+Atlas requests are not automatically retried, including timeouts, connection
+errors and rate limits, to avoid duplicating billable generation requests.
+
+## Cheaper Inference readers
+
+[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible LLM gateway.
+Each model costs 15–60% less than the list price of its lab.
+
+Select it explicitly with `--cheaperinference`; other readers are unchanged.
+Set `CHEAPER_INFERENCE_API_KEY` and use a bare model ID from the
+[model list](https://cheaperinference.com/#models):
+
+```bash
+export CHEAPER_INFERENCE_API_KEY=ci_live_...
+python run_bench.py --task simpleqa --model gpt-5.4-mini \
+    --cheaperinference --num-examples 1 --max-concurrent 1 --max-tokens 256
+```
+
+This text-only example does not use retrieval. For screenshot benchmarks, use
+`gpt-5.4-mini` or `gpt-5.4`, which accept image input. Model IDs are forwarded
+unchanged to `https://api.cheaperinference.com/v1` and never select the native
+Google SDK. `--api-key` overrides `CHEAPER_INFERENCE_API_KEY`, and other providers'
+environment keys are never used. Do not combine this option with another provider
+flag or `--api-base`.
+
 ## MiniMax readers
 
 Set `MINIMAX_API_KEY` and select either registered model ID. The model context length

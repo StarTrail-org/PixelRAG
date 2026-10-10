@@ -162,8 +162,12 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
             chunk_name = f"chunk_{tile_idx:04d}_00.png"
             chunk_path = os.path.join(article_dir, chunk_name)
             if not dry_run:
-                shutil.copy2(tile_path, chunk_path)
+                if tile_path.endswith(".png"):
+                    shutil.copy2(tile_path, chunk_path)
+                else:
+                    img.save(chunk_path, format="PNG")
                 files_written += 1
+            img.close()
             chunks_info.append(
                 {
                     "tile": tile_name,
@@ -241,8 +245,10 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
         manifest["article_id"] = article_id
 
     if not dry_run:
-        with open(chunks_json, "w") as f:
+        tmp_chunks = chunks_json + ".tmp"
+        with open(tmp_chunks, "w") as f:
             json.dump(manifest, f)
+        os.replace(tmp_chunks, chunks_json)
 
     return {
         "article_dir": article_dir,
@@ -344,7 +350,7 @@ def process_shard(
         tiles_deleted = _delete_tiles_in_shard(shard_dir)
 
     elapsed = time.time() - t0
-    shard_name = os.path.basename(shard_dir.rstrip("/"))
+    shard_name = os.path.basename(shard_dir.rstrip("/\\"))
     return {
         "shard": shard_name,
         "articles": total_articles,
