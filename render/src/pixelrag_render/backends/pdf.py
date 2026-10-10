@@ -32,6 +32,7 @@ def render_pdf(
         output_dir: Directory to write the tile subdirectory into.
         dpi: Resolution for rendering (default 200 gives ~1650×2200px for A4).
         pages: 1-based list of page numbers to render. ``None`` renders all pages.
+            Tile filenames and indices retain their zero-based source page index.
         quality: JPEG quality 1-100 (default 85).
         stem: Override for the tile directory name. Defaults to the PDF filename
             stem. The pipeline passes the article_id here so directory names
@@ -82,10 +83,11 @@ def render_pdf(
 
     saved_tiles: list[str] = []
     chunks_info: list[dict] = []
-    for idx, img in enumerate(images):
+    first_index = convert_kwargs.get("first_page", 1) - 1
+    for idx, img in enumerate(images, start=first_index):
         # If caller provided a sparse page list, skip pages not in the list
         if pages is not None:
-            page_num = min(pages) + idx
+            page_num = idx + 1
             if page_num not in pages:
                 continue
 
