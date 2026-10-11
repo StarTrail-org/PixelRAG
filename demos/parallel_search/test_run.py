@@ -120,7 +120,7 @@ def test_public_renderer_handoff(monkeypatch, tmp_path):
     def render_urls(urls, output, **kwargs):
         assert urls == ["https://docs.python.org/3/"]
         assert output == tmp_path / "tiles"
-        assert kwargs == {"stems": ["page-00"], "workers": 1}
+        assert kwargs == {"stems": ["page-00"], "workers": 1, "wait_network_idle": True}
         directory = Path(output) / "page-00.png.tiles"
         directory.mkdir(parents=True)
         (directory / "tile_0000.jpg").write_bytes(b"fixture")
