@@ -113,7 +113,7 @@ def render_pages(results: list[dict], output: Path) -> list[str]:
 
     directories = render_urls(
         [result["url"] for result in results],
-        output / "tiles",
+        output / "tiles" / uuid.uuid4().hex,
         stems=[f"page-{i:02d}" for i in range(len(results))],
         workers=1,
         wait_network_idle=True,

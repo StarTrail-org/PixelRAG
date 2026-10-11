@@ -117,9 +117,13 @@ def test_selection_and_errors():
 def test_public_renderer_handoff(monkeypatch, tmp_path):
     from pixelrag_render import render
 
+    captures = []
+
     def render_urls(urls, output, **kwargs):
         assert urls == ["https://docs.python.org/3/"]
-        assert output == tmp_path / "tiles"
+        assert output.parent == tmp_path / "tiles"
+        assert output not in captures
+        captures.append(output)
         assert kwargs == {"stems": ["page-00"], "workers": 1, "wait_network_idle": True}
         directory = Path(output) / "page-00.png.tiles"
         directory.mkdir(parents=True)
@@ -129,6 +133,10 @@ def test_public_renderer_handoff(monkeypatch, tmp_path):
     monkeypatch.setattr(render, "render_urls", render_urls)
     paths = run.render_pages([{"url": "https://docs.python.org/3/"}], tmp_path)
     assert len(paths) == 1 and Path(paths[0]).is_file()
+    # A prior longer page must not add stale tiles to a later capture's manifest.
+    (Path(paths[0]).parent / "tile_0001.jpg").write_bytes(b"old page")
+    new_paths = run.render_pages([{"url": "https://docs.python.org/3/"}], tmp_path)
+    assert len(new_paths) == 1 and new_paths[0] != paths[0]
 
     monkeypatch.setattr(render, "render_urls", lambda *args, **kwargs: [])
     with pytest.raises(RuntimeError, match="no screenshot tiles"):

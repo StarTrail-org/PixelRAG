@@ -27,7 +27,9 @@ on Linux x64, install `zstd` and Chrome's system libraries (on Debian/Ubuntu,
 `uv run --project demos/parallel_search pixelshot install-chrome`;
 elsewhere install Chrome/Chromium or set `CHROME_PATH` as described in the root
 README. Each run writes to `--output` (default above), replacing `results.json`.
-Use a separate output directory for each search you want to retain.
+Use a separate output directory for each search manifest you want to retain.
+Each screenshot capture uses a fresh subdirectory under `output/tiles/`, so a
+new manifest cannot pick up tiles left over from an earlier page.
 
 Screenshot paths are recorded in `results.json`. These are inputs for visual
 inspection or the existing chunk/embed/index pipeline; this demo does not build
