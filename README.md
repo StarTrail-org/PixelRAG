@@ -224,6 +224,10 @@ curl -X POST http://localhost:30001/search \
 
 ### Render a page programmatically
 
+To find pages on the open web before capturing them, try the optional
+[Parallel Search MCP demo](demos/parallel_search/). It saves source URLs and text
+excerpts, then can render selected pages as screenshot tiles without a search API key.
+
 ```python
 from pixelrag_render import render_url
 
