@@ -25,6 +25,9 @@ def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
     document's pixels with another document's metadata. On mismatch the stale
     directory is removed and re-rendered; corrupt manifests (e.g. a crash
     mid-write) are likewise re-rendered instead of poisoning later stages.
+    Explicitly incomplete captures are removed too, including derived chunks
+    that would otherwise make the chunk stage skip regeneration. A missing
+    ``complete`` field is legacy/unknown and does not invalidate the cache.
     """
     tile_dir = tiles_dir / f"{idx}.png.tiles"
     manifest_path = tile_dir / "tiles.json"
@@ -38,8 +41,14 @@ def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
         logger.warning("  Corrupt manifest in %s — re-rendering", tile_dir.name)
         recorded = None
     if recorded == expected:
-        return False
-    if recorded is not None:
+        if manifest.get("complete") is not False:
+            return False
+        logger.warning("  Incomplete capture in %s — re-rendering", tile_dir.name)
+        # Do not render over a partially removed cache: surviving chunks could
+        # make the chunk stage reuse obsolete data. Propagate cleanup failures.
+        shutil.rmtree(tile_dir)
+        return True
+    elif recorded is not None:
         logger.warning(
             "  %s was rendered from %r but position %d now holds %r — "
             "re-rendering (source set changed between runs; use --force "
