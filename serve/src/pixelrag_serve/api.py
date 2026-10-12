@@ -421,7 +421,7 @@ def _normalize_query_embeddings(queries: list[Query]) -> np.ndarray:
 
 
 def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
-    """Resolve chunk file path from article_id, tile_index, chunk_index."""
+    """Resolve a materialized chunk path (on-demand cache is handled separately)."""
     tiles_dir = _state["tiles_dir"]
     shard_size = _state.get("shard_size", 8284)
     tiles_dirname = f"{article_id}.png.tiles"
@@ -551,8 +551,9 @@ async def search(req: SearchRequest, request: Request):
     # n_docs <= 1000) a single include_images request could queue tens of
     # thousands of them, stalling every other caller's renders behind the same
     # lock. Past the budget a hit is returned without its image — what a failed
-    # render or a missing tile already yields — and the client can still fetch
-    # it from /tile. Cache hits are cheap and don't spend the budget.
+    # render or a missing tile already yields. /tile only serves existing files;
+    # a never-rendered, budget-skipped hit remains unavailable there. Cache hits
+    # are cheap and don't spend the budget.
     ondemand = _state.get("ondemand")
     renders_left = _MAX_ONDEMAND_RENDERS
 
@@ -692,8 +693,30 @@ async def tile(path: str):
 
 @app.get("/tile/{article_id}/{tile_index}/{chunk_index}")
 async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
-    """Serve a tile image by article_id, tile_index, chunk_index."""
+    """Serve a materialized tile or an already-cached on-demand chunk.
+
+    Never renders on a cache miss. Cached chunks are served raw, including any
+    last-chunk padding; /search can trim that padding using indexed tile_height.
+    """
+    if min(article_id, tile_index, chunk_index) < 0:
+        raise HTTPException(status_code=404, detail="Tile not found")
     path = _resolve_path(article_id, tile_index, chunk_index)
+    if not os.path.isfile(path):
+        ondemand = _state.get("ondemand")
+        cached = (
+            ondemand.cached_chunk_path(article_id, tile_index, chunk_index)
+            if ondemand is not None
+            else None
+        )
+        if cached is not None:
+            try:
+                resolved = Path(cached).resolve()
+                cache_root = Path(ondemand.cache_dir).resolve()
+            except (OSError, RuntimeError):
+                # Unresolvable paths (including symlink loops) are cache misses.
+                raise HTTPException(status_code=404, detail="Tile not found") from None
+            if resolved.is_relative_to(cache_root):
+                path = str(resolved)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Tile not found")
     media_type = "image/jpeg" if path.endswith((".jpg", ".jpeg")) else "image/png"
