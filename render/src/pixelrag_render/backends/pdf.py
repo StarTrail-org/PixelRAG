@@ -125,7 +125,7 @@ def render_pdf(
         # complete — see #139 on what an unconditional flag costs downstream.
         "complete": pages is None,
     }
-    with open(tile_dir / "tiles.json", "w") as f:
+    with open(tile_dir / "tiles.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f)
 
     # Write chunks.json so the chunker skips this directory —
@@ -139,7 +139,7 @@ def render_pdf(
         "num_chunks": len(chunks_info),
         "chunks": chunks_info,
     }
-    with open(tile_dir / "chunks.json", "w") as f:
+    with open(tile_dir / "chunks.json", "w", encoding="utf-8") as f:
         json.dump(chunks_manifest, f)
 
     logger.info("PDF rendered: %d pages → %s", len(saved_tiles), tile_dir)
