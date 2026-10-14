@@ -163,7 +163,23 @@ class FaissBackend:
         if not self._direct_map_built and hasattr(self.index, "make_direct_map"):
             self.index.make_direct_map()
             self._direct_map_built = True
-        return [self.index.reconstruct(int(v)).tolist() for v in vids]
+        out = []
+        for v in vids:
+            # Vectors are added sequentially (index.add, no IDMap), so valid ids
+            # are 0..ntotal-1. An unknown or non-integer id yields None — the
+            # protocol's documented `list[float] | None`, and what QdrantBackend
+            # already does — instead of an uncaught ValueError/RuntimeError
+            # surfacing as a 500 on the public endpoint.
+            try:
+                i = int(v)
+            except (TypeError, ValueError):
+                out.append(None)
+                continue
+            if not 0 <= i < self.index.ntotal:
+                out.append(None)
+                continue
+            out.append(self.index.reconstruct(i).tolist())
+        return out
 
 
 class QdrantBackend:

@@ -64,7 +64,19 @@ eval = [
     "datasets>=2.14",
     "huggingface-hub>=0.20",
 ]
-dev = ["pytest>=8.0"]
+# Everything tests/ needs, torch-free. The serve-side deps are listed one by one
+# rather than as `pixelrag[serve]` on purpose: that extra pulls torch,
+# torchvision and transformers, which the tests never touch — api.py imports them
+# lazily, inside the functions that encode queries. Keeping them out is what lets
+# CI run the serve and backend suites at all (see the note on core `numpy`).
+dev = [
+    "faiss-cpu>=1.9.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27",  # fastapi's TestClient
+    "pixelrag[qdrant]",
+    "pydantic>=2.0.0",
+    "pytest>=8.0",
+]
 
 [project.scripts]
 pixelshot = "pixelrag_render.render:main"
@@ -107,6 +119,7 @@ environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
+pixelrag = { workspace = true }
 
 [[tool.uv.index]]
 name = "pytorch-cu129"

@@ -4,15 +4,88 @@ This module provides model configurations to keep run_naive_simpleqa.py clean.
 """
 
 import os
-from typing import Dict, Optional
+from typing import Any, Dict
 
 MINIMAX_MODELS = {
     "minimax-m3": "MiniMax-M3",
     "minimax-m2.7": "MiniMax-M2.7",
 }
 
+MINIMAX_MODEL_METADATA = {
+    "minimax-m3": {
+        "context_window": 1_000_000,
+        "pricing_usd_per_million_tokens": {
+            "input": 0.6,
+            "output": 2.4,
+            "cache_read": 0.12,
+            "cache_write": None,
+        },
+        "input_modalities": ["text", "image", "video"],
+        "thinking": ["adaptive", "disabled"],
+    },
+    "minimax-m2.7": {
+        "context_window": 204_800,
+        "pricing_usd_per_million_tokens": {
+            "input": 0.3,
+            "output": 1.2,
+            "cache_read": 0.06,
+            "cache_write": 0.375,
+        },
+        "input_modalities": ["text"],
+        "thinking": ["always_on"],
+    },
+}
 
-def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
+# OrcaRouter is an OpenAI-compatible gateway, the same shape as the OpenRouter
+# and Commonstack aggregators wired up in run_bench.py. Defined here so the CLI
+# and the model-config branch cannot drift to different endpoints.
+ORCAROUTER_API_BASE = "https://api.orcarouter.ai/v1"
+
+MINIMAX_ENDPOINTS = {
+    "global_en": {
+        "api_base": "https://api.minimax.io/v1",
+        "anthropic_api_base": "https://api.minimax.io/anthropic",
+    },
+    "cn_zh": {
+        "api_base": "https://api.minimaxi.com/v1",
+        "anthropic_api_base": "https://api.minimaxi.com/anthropic",
+    },
+}
+
+
+def get_atlascloud_config(
+    model_name: str, api_key: str | None = None
+) -> Dict[str, Any]:
+    """Resolve an explicitly selected Atlas Cloud reader without native routing."""
+    if not api_key or api_key == "dummy":
+        api_key = os.getenv("ATLASCLOUD_API_KEY")
+    if not api_key or not api_key.strip() or api_key == "dummy":
+        raise ValueError("Atlas Cloud requires --api-key or ATLASCLOUD_API_KEY.")
+    return {
+        "api_base": "https://api.atlascloud.ai/v1",
+        "api_key": api_key,
+        "model": model_name,
+    }
+
+
+def get_cheaperinference_config(
+    model_name: str, api_key: str | None = None
+) -> Dict[str, Any]:
+    """Resolve an explicitly selected Cheaper Inference reader without native routing."""
+    if not api_key or api_key == "dummy":
+        api_key = os.getenv("CHEAPER_INFERENCE_API_KEY")
+    if not api_key or not api_key.strip() or api_key == "dummy":
+        raise ValueError(
+            "Cheaper Inference requires --api-key or CHEAPER_INFERENCE_API_KEY."
+        )
+    return {
+        "api_base": "https://api.cheaperinference.com/v1",
+        "api_key": api_key,
+        "model": model_name,
+    }
+
+
+def get_model_config(model_name: str) -> Dict[str, Any]:
     """
     Get model configuration based on model name.
 
@@ -20,17 +93,52 @@ def get_model_config(model_name: str) -> Dict[str, Optional[str]]:
         model_name: Name of the model (e.g., 'Qwen/Qwen3-VL-4B-Instruct', 'gemini-3-pro-preview')
 
     Returns:
-        Dictionary with 'api_base', 'api_key', and 'model' keys.
+        Dictionary with endpoint, authentication, model, and capability metadata.
     """
     model_lower = model_name.lower()
 
     # MiniMax models (OpenAI-compatible API)
-    minimax_model = MINIMAX_MODELS.get(model_lower.rsplit("/", 1)[-1])
+    minimax_key = model_lower.rsplit("/", 1)[-1]
+    minimax_model = MINIMAX_MODELS.get(minimax_key)
     if minimax_model:
+        # The two bases are independent overrides for gateways and proxies, so
+        # resolve them first and consult a region only for whichever was left
+        # unset. Validating the region up front rejected deployments that had
+        # pinned both endpoints and were not using a region at all.
+        api_base = os.getenv("MINIMAX_API_BASE")
+        anthropic_api_base = os.getenv("MINIMAX_ANTHROPIC_API_BASE")
+        if api_base is None or anthropic_api_base is None:
+            region = os.getenv("MINIMAX_API_REGION", "global_en").lower()
+            if region not in MINIMAX_ENDPOINTS:
+                supported = ", ".join(MINIMAX_ENDPOINTS)
+                raise ValueError(
+                    f"Unsupported MINIMAX_API_REGION {region!r}; "
+                    f"expected one of: {supported}"
+                )
+            endpoints = MINIMAX_ENDPOINTS[region]
+            if api_base is None:
+                api_base = endpoints["api_base"]
+            if anthropic_api_base is None:
+                anthropic_api_base = endpoints["anthropic_api_base"]
+
         return {
-            "api_base": os.getenv("MINIMAX_API_BASE", "https://api.minimax.io/v1"),
+            "api_base": api_base,
+            "anthropic_api_base": anthropic_api_base,
             "api_key": os.getenv("MINIMAX_API_KEY", os.getenv("API_KEY", "dummy")),
             "model": minimax_model,
+            # MINIMAX_MODELS is the registry; this is a side table keyed off it
+            # with nothing enforcing that the two agree. A model listed in the
+            # registry has to resolve whether or not its capability entry has
+            # been filled in — the caller reads api_base, api_key and model.
+            **MINIMAX_MODEL_METADATA.get(minimax_key, {}),
+        }
+
+    # OrcaRouter models (OpenAI-compatible gateway)
+    if "orcarouter" in model_lower:
+        return {
+            "api_base": os.getenv("ORCAROUTER_API_BASE", ORCAROUTER_API_BASE),
+            "api_key": os.getenv("ORCAROUTER_API_KEY", os.getenv("API_KEY", "dummy")),
+            "model": model_name,
         }
 
     # Gemini models

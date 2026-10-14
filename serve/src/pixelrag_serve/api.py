@@ -52,7 +52,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 _request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "request_id",
@@ -171,8 +171,12 @@ class Query(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    queries: list[Query]
-    n_docs: int = 10
+    # Bounded: an unbounded batch multiplies every per-query cost (embedding,
+    # image decode) on the public endpoint. Real callers send 1; 32 is generous.
+    queries: list[Query] = Field(max_length=32)
+    # Bounded: fetch_k = n_docs * 10 feeds FAISS search k, so an unbounded value
+    # is a trivial OOM/DoS on the public endpoint. Largest real caller uses 10.
+    n_docs: int = Field(default=10, ge=1, le=1000)
     nprobe: int | None = None  # override default nprobe
     min_tile_height: int | None = None  # filter out small/blank chunks
     instruction: str | None = None  # override query embedding instruction
@@ -269,6 +273,16 @@ class StatusResponse(BaseModel):
 
 DEFAULT_INSTRUCTION = "Retrieve images or text relevant to the user's query."
 
+# Bounds for attacker-controlled query images on the public /search endpoint.
+# ~10 MB of base64 caps the payload/decode; 25 MP caps the decoded RGB canvas
+# (query images are downscaled far below this for the VL model anyway).
+_MAX_IMAGE_B64_LEN = 10 * 1024 * 1024
+_MAX_IMAGE_PIXELS = 25_000_000
+
+# Most on-demand renders one /search request may trigger (see the search handler).
+# A real caller asks for n_docs=10 with include_images, so this is generous.
+_MAX_ONDEMAND_RENDERS = 16
+
 
 def _parse_queries(
     queries: list[Query], instruction: str | None = None
@@ -289,8 +303,27 @@ def _parse_queries(
             img_data = q.image
             if img_data.startswith("data:"):
                 img_data = img_data.split(",", 1)[-1]
-            img_bytes = base64.b64decode(img_data)
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            # Public endpoint: q.image is attacker-controlled. Bound the payload
+            # and the decoded canvas so an oversized blob or a tiny
+            # "decompression bomb" can't OOM the service, and turn any decode
+            # failure into a clean 400 instead of an uncaught 500.
+            if len(img_data) > _MAX_IMAGE_B64_LEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"image too large (max {_MAX_IMAGE_B64_LEN} base64 chars)",
+                )
+            try:
+                img = Image.open(io.BytesIO(base64.b64decode(img_data)))
+                if img.width * img.height > _MAX_IMAGE_PIXELS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"image too large (max {_MAX_IMAGE_PIXELS} pixels)",
+                    )
+                img = img.convert("RGB")
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(status_code=400, detail="invalid image data")
             user_content.append({"type": "image", "image": img})
         if q.text:
             user_content.append({"type": "text", "text": q.text})
@@ -388,7 +421,7 @@ def _normalize_query_embeddings(queries: list[Query]) -> np.ndarray:
 
 
 def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
-    """Resolve chunk file path from article_id, tile_index, chunk_index."""
+    """Resolve a materialized chunk path (on-demand cache is handled separately)."""
     tiles_dir = _state["tiles_dir"]
     shard_size = _state.get("shard_size", 8284)
     tiles_dirname = f"{article_id}.png.tiles"
@@ -511,6 +544,19 @@ async def search(req: SearchRequest, request: Request):
     # Build results
     tiles_dir = _state.get("tiles_dir", "")
 
+    # Budget for on-demand renders across the whole request. A render is a
+    # Chrome page load under a process-global lock, bounded only by
+    # PIXELRAG_RENDER_TIMEOUT (120s by default), and nothing else caps how many
+    # one request can ask for: at this endpoint's own limits (32 queries,
+    # n_docs <= 1000) a single include_images request could queue tens of
+    # thousands of them, stalling every other caller's renders behind the same
+    # lock. Past the budget a hit is returned without its image — what a failed
+    # render or a missing tile already yields. /tile only serves existing files;
+    # a never-rendered, budget-skipped hit remains unavailable there. Cache hits
+    # are cheap and don't spend the budget.
+    ondemand = _state.get("ondemand")
+    renders_left = _MAX_ONDEMAND_RENDERS
+
     results = []
     for qi in range(len(req.queries)):
         hits = []
@@ -530,11 +576,17 @@ async def search(req: SearchRequest, request: Request):
             if req.include_images and tile_path and os.path.exists(tile_path):
                 with open(tile_path, "rb") as fp:
                     img_b64 = base64.b64encode(fp.read()).decode()
-            elif req.include_images and _state.get("ondemand") is not None:
-                # Render off the event loop: _ondemand_chunk_b64 -> render_url uses
-                # asyncio.run(), which raises "cannot be called from a running event
-                # loop" if invoked directly here. Offload to a worker thread.
-                img_b64 = await asyncio.to_thread(_ondemand_chunk_b64, aid, ti, ci, th)
+            elif req.include_images and ondemand is not None:
+                cached = ondemand.cached_chunk_path(aid, ti, ci) is not None
+                if cached or renders_left > 0:
+                    if not cached:
+                        renders_left -= 1
+                    # Render off the event loop: _ondemand_chunk_b64 -> render_url uses
+                    # asyncio.run(), which raises "cannot be called from a running event
+                    # loop" if invoked directly here. Offload to a worker thread.
+                    img_b64 = await asyncio.to_thread(
+                        _ondemand_chunk_b64, aid, ti, ci, th
+                    )
             # Expose a relative tile path, not the absolute server filesystem
             # path (avoids leaking the host's directory layout; clients fetch
             # tiles via /tile/{article_id}/{tile_index}/{chunk_index}).
@@ -610,8 +662,15 @@ async def departments():
     }
 
 
+# Bound for the public /reconstruct endpoint: every id returns a full
+# `dimension`-length float list, which serializes to ~40 KB of JSON at dim 2048,
+# and the first call builds a direct map over the whole index. Real callers
+# debug a handful of vectors at a time.
+_MAX_RECONSTRUCT_IDS = 256
+
+
 class ReconstructRequest(BaseModel):
-    vector_ids: list[int | str]
+    vector_ids: list[int | str] = Field(max_length=_MAX_RECONSTRUCT_IDS)
 
 
 @app.post("/reconstruct")
@@ -634,8 +693,30 @@ async def tile(path: str):
 
 @app.get("/tile/{article_id}/{tile_index}/{chunk_index}")
 async def tile_by_id(article_id: int, tile_index: int, chunk_index: int):
-    """Serve a tile image by article_id, tile_index, chunk_index."""
+    """Serve a materialized tile or an already-cached on-demand chunk.
+
+    Never renders on a cache miss. Cached chunks are served raw, including any
+    last-chunk padding; /search can trim that padding using indexed tile_height.
+    """
+    if min(article_id, tile_index, chunk_index) < 0:
+        raise HTTPException(status_code=404, detail="Tile not found")
     path = _resolve_path(article_id, tile_index, chunk_index)
+    if not os.path.isfile(path):
+        ondemand = _state.get("ondemand")
+        cached = (
+            ondemand.cached_chunk_path(article_id, tile_index, chunk_index)
+            if ondemand is not None
+            else None
+        )
+        if cached is not None:
+            try:
+                resolved = Path(cached).resolve()
+                cache_root = Path(ondemand.cache_dir).resolve()
+            except (OSError, RuntimeError):
+                # Unresolvable paths (including symlink loops) are cache misses.
+                raise HTTPException(status_code=404, detail="Tile not found") from None
+            if resolved.is_relative_to(cache_root):
+                path = str(resolved)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Tile not found")
     media_type = "image/jpeg" if path.endswith((".jpg", ".jpeg")) else "image/png"
@@ -849,9 +930,9 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-VL-Embedding-2B")
     parser.add_argument(
         "--device",
-        choices=["cpu", "cuda"],
+        choices=["cpu", "cuda", "mps"],
         default="cpu",
-        help="Device to run inference on: cpu (default) or cuda",
+        help="Device to run inference on: cpu (default), cuda, or mps",
     )
     parser.add_argument(
         "--peft-adapter",

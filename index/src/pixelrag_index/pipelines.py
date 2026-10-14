@@ -25,6 +25,9 @@ def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
     document's pixels with another document's metadata. On mismatch the stale
     directory is removed and re-rendered; corrupt manifests (e.g. a crash
     mid-write) are likewise re-rendered instead of poisoning later stages.
+    Explicitly incomplete captures are removed too, including derived chunks
+    that would otherwise make the chunk stage skip regeneration. A missing
+    ``complete`` field is legacy/unknown and does not invalidate the cache.
     """
     tile_dir = tiles_dir / f"{idx}.png.tiles"
     manifest_path = tile_dir / "tiles.json"
@@ -38,8 +41,14 @@ def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
         logger.warning("  Corrupt manifest in %s — re-rendering", tile_dir.name)
         recorded = None
     if recorded == expected:
-        return False
-    if recorded is not None:
+        if manifest.get("complete") is not False:
+            return False
+        logger.warning("  Incomplete capture in %s — re-rendering", tile_dir.name)
+        # Do not render over a partially removed cache: surviving chunks could
+        # make the chunk stage reuse obsolete data. Propagate cleanup failures.
+        shutil.rmtree(tile_dir)
+        return True
+    elif recorded is not None:
         logger.warning(
             "  %s was rendered from %r but position %d now holds %r — "
             "re-rendering (source set changed between runs; use --force "
@@ -63,9 +72,10 @@ def _department_of(article: dict, source_root: str) -> str:
     if not raw:
         url = article.get("url") or ""
         if url.startswith("file://"):
-            from urllib.parse import unquote, urlparse
+            from urllib.parse import urlparse
+            from urllib.request import url2pathname
 
-            raw = unquote(urlparse(url).path)
+            raw = url2pathname(urlparse(url).path)
     if not raw or not source_root:
         return ""
     try:
@@ -253,6 +263,7 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
     # Render local images (PNG/JPG) — copy/resize into the tile directory structure
     if image_docs:
         from PIL import Image as PILImage
+        from PIL import ImageOps
 
         _MAX_WIDTH = 4000  # cap large images to avoid VRAM pressure during embedding
 
@@ -262,7 +273,9 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             tile_dir = tiles_dir / f"{idx}.png.tiles"
             tile_dir.mkdir(parents=True, exist_ok=True)
             try:
-                img = PILImage.open(doc.path)
+                # Apply the display orientation before measuring or resizing pixels.
+                with PILImage.open(doc.path) as source_image:
+                    img = ImageOps.exif_transpose(source_image)
                 # JPEG has no alpha: composite transparent images onto white
                 # before dropping the channel. A bare convert("RGB") maps
                 # fully-transparent pixels to their underlying RGB — black for
@@ -291,8 +304,9 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
                     "tiles": ["tile_0000.jpg"],
                     "complete": True,
                 }
-                with open(tile_dir / "tiles.json", "w") as f:
-                    json.dump(manifest, f)
+                tmp_tiles = tile_dir / "tiles.json.tmp"
+                tmp_tiles.write_text(json.dumps(manifest))
+                os.replace(tmp_tiles, tile_dir / "tiles.json")
             except Exception as e:
                 logger.warning("  FAILED image %s: %s", doc.id, e)
         logger.info("  Rendered %d local images", len(image_docs))
@@ -441,9 +455,10 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
         import numpy as np
 
         npz_files = sorted(embeddings_dir.glob("shard_*.npz"))
-        total_vectors = sum(
-            np.load(f, mmap_mode="r")["embeddings"].shape[0] for f in npz_files
-        )
+        total_vectors = 0
+        for f in npz_files:
+            with np.load(f, mmap_mode="r") as data:
+                total_vectors += data["embeddings"].shape[0]
         nlist = min(4096, max(1, total_vectors // 40))
         logger.info(
             "Stage 4/4: Building FAISS index (%d vectors, nlist=%d)...",
@@ -451,6 +466,10 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             nlist,
         )
         cmd += ["--nlist", str(nlist)]
+        if index_cfg.get("pq_m"):
+            cmd += ["--pq-m", str(index_cfg["pq_m"])]
+            if index_cfg.get("pq_nbits"):
+                cmd += ["--pq-nbits", str(index_cfg["pq_nbits"])]
     subprocess.run(cmd, check=True)
 
     logger.info("Index built at %s", output)

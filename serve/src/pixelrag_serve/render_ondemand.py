@@ -112,14 +112,27 @@ class OnDemandTiles:
     def _article_dir(self, article_id: int) -> str:
         return os.path.join(self.cache_dir, f"{article_id}.png.tiles")
 
+    def _chunk_file(self, article_id: int, tile_index: int, chunk_index: int) -> str:
+        chunk_name = f"chunk_{tile_index:04d}_{chunk_index:02d}.png"
+        return os.path.join(self._article_dir(article_id), chunk_name)
+
+    def cached_chunk_path(self, article_id: int, tile_index: int, chunk_index: int):
+        """Path to an already-rendered chunk, or None. Never renders.
+
+        Lets a caller tell a cheap cache hit from a page render before
+        committing to one.
+        """
+        cpath = self._chunk_file(article_id, tile_index, chunk_index)
+        return cpath if os.path.exists(cpath) else None
+
     def chunk_path(
         self, article_id: int, title: str, tile_index: int, chunk_index: int
     ):
         """Path to chunk_{ti}_{ci}.png, rendering+chunking the page on a cache miss."""
-        chunk_name = f"chunk_{tile_index:04d}_{chunk_index:02d}.png"
-        cpath = os.path.join(self._article_dir(article_id), chunk_name)
-        if os.path.exists(cpath):
-            return cpath
+        cached = self.cached_chunk_path(article_id, tile_index, chunk_index)
+        if cached:
+            return cached
+        cpath = self._chunk_file(article_id, tile_index, chunk_index)
         if not title:
             return None
         with _render_lock:
