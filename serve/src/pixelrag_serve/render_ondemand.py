@@ -26,6 +26,15 @@ from urllib.parse import quote
 _render_lock = threading.Lock()  # one Chrome render at a time per process
 # Hard timeout (seconds) for a single page render subprocess.
 _RENDER_TIMEOUT = float(os.environ.get("PIXELRAG_RENDER_TIMEOUT", "120"))
+# How long a caller will wait for its turn at _render_lock before giving up.
+# Renders are serialized process-wide, so without a bound a caller can queue
+# behind another request's whole render budget -- 16 renders * _RENDER_TIMEOUT in
+# the worst case -- while holding a thread from the event loop's executor. Giving
+# up returns no image rather than no response: the hit is still served, and once
+# some other request's render fills the cache the chunk is available from /tile.
+# Against the persistent Chrome a render is ~1-2s (the 120s above is a safety
+# ceiling), so this absorbs a deep queue and only sheds under real contention.
+_RENDER_QUEUE_TIMEOUT = float(os.environ.get("PIXELRAG_RENDER_QUEUE_TIMEOUT", "30"))
 
 
 class OnDemandTiles:
@@ -135,13 +144,17 @@ class OnDemandTiles:
         cpath = self._chunk_file(article_id, tile_index, chunk_index)
         if not title:
             return None
-        with _render_lock:
+        if not _render_lock.acquire(timeout=_RENDER_QUEUE_TIMEOUT):
+            return None  # queue too deep; serve the hit without this image
+        try:
             if os.path.exists(cpath):  # filled while we waited for the lock
                 return cpath
             try:
                 self._render_and_chunk(article_id, title)
             except Exception:
                 return None
+        finally:
+            _render_lock.release()
         return cpath if os.path.exists(cpath) else None
 
     def _render_and_chunk(self, article_id: int, title: str) -> None:
