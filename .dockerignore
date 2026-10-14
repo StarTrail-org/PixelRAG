@@ -1,0 +1,16 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+tiles
+arxiv
+embeddings
+results
+logs
+tmp
+node_modules

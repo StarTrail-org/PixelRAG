@@ -1,0 +1,19 @@
+services:
+  pixelrag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "8000:8000"
+    environment:
+      PIXELRAG_INDEX_DIR: /data/index
+      PIXELRAG_TILES_DIR: /data/tiles
+      PIXELRAG_ARTICLES_JSON: /data/index/articles.json
+    volumes:
+      - pixelrag-index:/data/index:ro
+      - pixelrag-tiles:/data/tiles
+
+volumes:
+  pixelrag-index:
+  pixelrag-tiles:
