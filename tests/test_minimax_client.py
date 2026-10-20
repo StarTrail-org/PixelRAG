@@ -215,7 +215,15 @@ def test_flash_react_replays_complete_assistant_message(captured_requests):
                 )
             )
             assert text == "<search>next evidence</search>"
-            history = usage.pop("assistant_message", text)
+            # Mirrors run_bench: read without mutating, and the recorded
+            # token dict must not carry the conversation message.
+            history = usage.get("_assistant_message", text)
+            assert [k for k in usage if k.startswith("_")] == ["_assistant_message"]
+            assert {k for k in usage if not k.startswith("_")} <= {
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+            }
             await client.generate(
                 build_react_messages(
                     "Question",

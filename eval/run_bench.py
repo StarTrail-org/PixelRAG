@@ -326,7 +326,7 @@ async def process_example(
                 "dataset_name": task_name,
                 "retrieval_type": retrieval_result.retrieval_type,
                 "has_retrieval_content": retrieval_result.has_content,
-                "usage": usage,
+                "usage": _token_usage(usage),
                 "success": True,
                 "timing": {
                     "retrieval_time": retrieval_time,
@@ -511,6 +511,11 @@ def _hits_to_retrieval_result(hits: list[dict]) -> "RetrievalResult":  # noqa: F
     )
 
 
+def _token_usage(usage: dict) -> dict:
+    """Token counts only: drop private keys carried alongside them."""
+    return {k: v for k, v in usage.items() if not k.startswith("_")}
+
+
 async def process_example_react(
     llm_client: LLMClient,
     retriever,
@@ -585,7 +590,7 @@ async def process_example_react(
                 search_query = match.group(1).strip()
                 all_search_queries.append(search_query)
                 assistant_responses.append(
-                    usage.pop("assistant_message", generated_text)
+                    usage.get("_assistant_message", generated_text)
                 )
                 logger.info(
                     f"ReAct [{example_id}] turn {turn + 1}: searching '{search_query[:80]}'"
@@ -650,7 +655,7 @@ async def process_example_react(
                 "dataset_name": task_name,
                 "retrieval_type": "local_api_react",
                 "has_retrieval_content": any(r.has_content for r in retrieval_results),
-                "usage": usage,
+                "usage": _token_usage(usage),
                 "success": True,
                 "react_turns": turns_used,
                 "react_search_queries": all_search_queries,

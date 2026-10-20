@@ -36,6 +36,12 @@ from .retrieval import RetrievalResult
 
 logger = logging.getLogger(__name__)
 
+
+def _minimax_key(model: str) -> str:
+    """Registry key for a model name, matching get_model_config's lookup."""
+    return model.lower().rsplit("/", 1)[-1]
+
+
 # Some modern reasoning models deprecate `temperature` (Claude Opus 4.7+, some
 # GPT-5 variants). Both backend paths consult this list, so a newly released
 # model is added in one place rather than drifting between them.
@@ -491,15 +497,21 @@ class LLMClient:
         # Kept for the LiteLLM path (module-level SDK, no persistent client object).
         self.api_key = api_key
         self.api_base = api_base
+        # Match the same way get_model_config does -- on the last path segment --
+        # so a vendor-prefixed spelling like "MiniMax/MiniMax-M3.1-Flash" (used by
+        # this module's own tests) resolves identically here and at the
+        # assistant-message branch in _generate_openai. Comparing the bare string
+        # made the two disagree: is_direct_minimax was False while the message
+        # branch fired, so Flash silently got the legacy thinking payload.
         self.is_direct_minimax = (
             not use_litellm
-            and model.lower() in MINIMAX_MODELS
+            and _minimax_key(model) in MINIMAX_MODELS
             and (api_base or "").rstrip("/")
             in {endpoint["api_base"] for endpoint in MINIMAX_ENDPOINTS.values()}
         )
         if (
             self.is_direct_minimax
-            and model.lower() == "minimax-m3.1-flash"
+            and _minimax_key(model) == "minimax-m3.1-flash"
             and enable_thinking is False
         ):
             raise ValueError(
@@ -788,10 +800,13 @@ class LLMClient:
                 "total_tokens": response.usage.total_tokens,
             }
 
-        if self.model.lower().rsplit("/", 1)[-1] in MINIMAX_MODELS:
+        if _minimax_key(self.model) in MINIMAX_MODELS:
             # ReAct must replay Flash's separate reasoning_content together with
             # the assistant content and any tool calls, not just the answer text.
-            usage["assistant_message"] = response.choices[0].message.model_dump(
+            # Underscore-prefixed: `usage` is serialized verbatim as each
+            # record's token accounting, so anything here that is not a token
+            # count must be strippable. run_bench drops _-keys before writing.
+            usage["_assistant_message"] = response.choices[0].message.model_dump(
                 exclude_none=True
             )
 
