@@ -900,7 +900,7 @@ class WikipediaAPIRetriever(BaseRetriever):
         # Match patterns like:
         # https://en.wikipedia.org/wiki/Python_(programming_language)
         # https://zh.wikipedia.org/wiki/Artificial_intelligence
-        pattern = r"https?://[a-z]{2,3}\.wikipedia\.org/wiki/(.+?)(?:#.*)?$"
+        pattern = r"https?://[a-z]{2,3}\.wikipedia\.org/wiki/(.+?)(?:[?#].*)?$"
         match = re.match(pattern, url)
         if match:
             title = unquote(match.group(1))

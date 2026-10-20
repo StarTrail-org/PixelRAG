@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# Blue-green switch for the PixelRAG search API.
+# Blue-green switch for the PixelRAG search API, host side.
 #
-# Points BOTH api.pixelrag.ai (via nginx) and the agent backend (direct on
-# localhost) at the chosen slot, but only after the target passes a health
-# check and a smoke query. Rollback is just switching back to the other port.
+# Points this host's nginx upstream and the agent backend (direct on localhost)
+# at the chosen slot, after the target passes a health check and a smoke query.
+# Rollback is just switching back to the other port.
+#
+# SCOPE — read this before using it to resolve an outage. If public traffic
+# reaches this host through something in front of it (a relay, a reverse proxy,
+# a tunnel endpoint), then that layer selects the slot for public requests and
+# this script does not touch it. Running this alone then moves the host and the
+# agent while the public route stays where it was, which looks like a completed
+# switch and serves the old slot. Set PIXELRAG_INGRESS_SWITCH_HOOK to a script
+# that moves that layer too; it is called with the chosen port and must exit 0.
 #
 #   blue  = 30001  (base model,  pixelrag-api.service)
 #   green = 30002  (LoRA model,  pixelrag-api-green.service)
@@ -28,7 +36,7 @@ hits=$(curl -fsS -X POST "${base}/search" -H 'Content-Type: application/json' \
 [ "${hits:-0}" -ge 1 ] || { echo "ABORT: smoke query returned no hits"; exit 1; }
 echo "smoke ok (${hits} hits)"
 
-# 3. Flip nginx (api.pixelrag.ai) — graceful reload, zero dropped connections.
+# 3. Flip this host's nginx — graceful reload, zero dropped connections.
 echo "upstream pixelrag_api { server 127.0.0.1:${PORT}; }" | sudo tee "$UPSTREAM" >/dev/null
 sudo nginx -t && sudo nginx -s reload
 
@@ -38,4 +46,18 @@ printf '[Service]\nEnvironment=PIXELRAG_SEARCH_URL=http://localhost:%s\n' "$PORT
 sudo systemctl daemon-reload
 sudo systemctl restart pixelrag-agent.service
 
-echo "SWITCHED: api.pixelrag.ai + agent -> 127.0.0.1:${PORT}"
+# 5. Whatever fronts this host has its own idea of which slot is live, and it
+# is the one public traffic obeys. Moving it is deployment-specific, so it is
+# delegated rather than assumed absent.
+if [ -n "${PIXELRAG_INGRESS_SWITCH_HOOK:-}" ]; then
+  echo "running ingress hook: ${PIXELRAG_INGRESS_SWITCH_HOOK} ${PORT}"
+  "${PIXELRAG_INGRESS_SWITCH_HOOK}" "${PORT}" || {
+    echo "ABORT: ingress hook failed — the host moved but public traffic may still be on the old slot" >&2
+    exit 1
+  }
+  echo "SWITCHED: host nginx + agent + public ingress -> 127.0.0.1:${PORT}"
+else
+  echo "SWITCHED: host nginx + agent -> 127.0.0.1:${PORT}"
+  echo "NOTE: public ingress not touched. If anything fronts this host, move it too,"
+  echo "      then verify the public endpoint rather than the local one."
+fi

@@ -822,6 +822,7 @@ async def run_evaluation(args: argparse.Namespace):
         max_tokens=args.max_tokens,
         timeout=args.reader_timeout,
         enable_thinking=False if args.no_think else None,
+        use_litellm=args.litellm,
     )
 
     # Smoke test
@@ -1089,6 +1090,12 @@ def main():
     parser.add_argument("--api-key", default="dummy")
     parser.add_argument(
         "--model", default="Qwen/Qwen3-VL-4B-Instruct", help="Reader model name"
+    )
+    parser.add_argument(
+        "--litellm",
+        action="store_true",
+        help="Route the reader through the LiteLLM SDK (100+ providers via a "
+        "provider-prefixed --model, e.g. anthropic/claude-3-5-sonnet).",
     )
     parser.add_argument(
         "--max-tokens",
