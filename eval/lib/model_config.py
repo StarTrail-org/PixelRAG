@@ -7,14 +7,39 @@ import os
 from typing import Any, Dict
 
 MINIMAX_MODELS = {
+    "minimax-m3.1-flash": "MiniMax-M3.1-Flash",
     "minimax-m3": "MiniMax-M3",
-    "minimax-m2.7": "MiniMax-M2.7",
 }
 
+# Resolve explicit legacy selections without advertising them as current models.
+MINIMAX_LEGACY_MODELS = {"minimax-m2.7": "MiniMax-M2.7"}
+
 MINIMAX_MODEL_METADATA = {
+    "minimax-m3.1-flash": {
+        "context_window": 1_000_000,
+        "max_output_tokens": 524_288,
+        "pricing_usd_per_million_tokens": {
+            "input": 0.15,
+            "output": 0.6,
+            "cache_read": 0.015,
+            "cache_write": None,
+        },
+        "input_modalities": ["text", "image", "video"],
+        "thinking": ["adaptive"],
+        "reasoning_effort": ["low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "max",
+    },
     "minimax-m3": {
         "context_window": 1_000_000,
+        # Standard-tier pricing up to 512k input tokens.
         "pricing_usd_per_million_tokens": {
+            "input": 0.3,
+            "output": 1.2,
+            "cache_read": 0.06,
+            "cache_write": None,
+        },
+        "long_context_pricing_usd_per_million_tokens": {
+            "input_range": ">512k",
             "input": 0.6,
             "output": 2.4,
             "cache_read": 0.12,
@@ -99,7 +124,9 @@ def get_model_config(model_name: str) -> Dict[str, Any]:
 
     # MiniMax models (OpenAI-compatible API)
     minimax_key = model_lower.rsplit("/", 1)[-1]
-    minimax_model = MINIMAX_MODELS.get(minimax_key)
+    minimax_model = MINIMAX_MODELS.get(minimax_key) or MINIMAX_LEGACY_MODELS.get(
+        minimax_key
+    )
     if minimax_model:
         # The two bases are independent overrides for gateways and proxies, so
         # resolve them first and consult a region only for whichever was left

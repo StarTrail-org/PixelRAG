@@ -12,6 +12,9 @@ get_model_config = MODEL_CONFIG["get_model_config"]
 @pytest.mark.parametrize(
     ("model_name", "model_id"),
     [
+        ("MiniMax-M3.1-Flash", "MiniMax-M3.1-Flash"),
+        ("MiniMax/MiniMax-M3.1-Flash", "MiniMax-M3.1-Flash"),
+        ("minimax-m3.1-flash", "MiniMax-M3.1-Flash"),
         ("MiniMax-M3", "MiniMax-M3"),
         ("MiniMax/MiniMax-M3", "MiniMax-M3"),
         ("MiniMax-M2.7", "MiniMax-M2.7"),
@@ -85,7 +88,14 @@ def test_minimax_model_config_supports_endpoint_and_key_overrides(monkeypatch):
             1_000_000,
             ["text", "image", "video"],
             ["adaptive", "disabled"],
-            {"input": 0.6, "output": 2.4, "cache_read": 0.12, "cache_write": None},
+            {"input": 0.3, "output": 1.2, "cache_read": 0.06, "cache_write": None},
+        ),
+        (
+            "MiniMax-M3.1-Flash",
+            1_000_000,
+            ["text", "image", "video"],
+            ["adaptive"],
+            {"input": 0.15, "output": 0.6, "cache_read": 0.015, "cache_write": None},
         ),
         (
             "MiniMax-M2.7",
@@ -105,6 +115,27 @@ def test_minimax_model_config_exposes_current_metadata(
     assert config["input_modalities"] == modalities
     assert config["thinking"] == thinking
     assert config["pricing_usd_per_million_tokens"] == pricing
+
+
+def test_minimax_current_catalog_and_legacy_resolution():
+    assert list(MODEL_CONFIG["MINIMAX_MODELS"].values()) == [
+        "MiniMax-M3.1-Flash",
+        "MiniMax-M3",
+    ]
+    assert get_model_config("MiniMax-M2.7")["model"] == "MiniMax-M2.7"
+    flash = get_model_config("MiniMax-M3.1-Flash")
+    assert flash["max_output_tokens"] == 524_288
+    assert flash["reasoning_effort"] == ["low", "medium", "high", "xhigh", "max"]
+    assert flash["default_reasoning_effort"] == "max"
+    assert get_model_config("MiniMax-M3")[
+        "long_context_pricing_usd_per_million_tokens"
+    ] == {
+        "input_range": ">512k",
+        "input": 0.6,
+        "output": 2.4,
+        "cache_read": 0.12,
+        "cache_write": None,
+    }
 
 
 def test_minimax_model_config_rejects_unknown_region(monkeypatch):

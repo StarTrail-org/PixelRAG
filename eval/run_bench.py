@@ -584,7 +584,9 @@ async def process_example_react(
                 # Extract search query and do another round
                 search_query = match.group(1).strip()
                 all_search_queries.append(search_query)
-                assistant_responses.append(generated_text)
+                assistant_responses.append(
+                    usage.pop("assistant_message", generated_text)
+                )
                 logger.info(
                     f"ReAct [{example_id}] turn {turn + 1}: searching '{search_query[:80]}'"
                 )
@@ -622,7 +624,12 @@ async def process_example_react(
                     ],
                 }
                 if turn_idx < len(assistant_responses):
-                    turn_info["assistant_response"] = assistant_responses[turn_idx]
+                    response = assistant_responses[turn_idx]
+                    turn_info["assistant_response"] = (
+                        response.get("content", "")
+                        if isinstance(response, dict)
+                        else response
+                    )
                 elif turn_idx == len(retrieval_results) - 1:
                     # Last turn: the final_response is the answer
                     turn_info["assistant_response"] = final_response

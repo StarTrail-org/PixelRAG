@@ -236,29 +236,37 @@ flag or `--api-base`.
 
 ## MiniMax readers
 
-Set `MINIMAX_API_KEY` and select either registered model ID. The model context length
-must be passed explicitly so retrieval truncation uses the correct limit.
+Set `MINIMAX_API_KEY` and select `MiniMax-M3.1-Flash` (recommended) or `MiniMax-M3`.
+The model context length must be passed explicitly so retrieval truncation uses
+the correct limit. Explicit legacy `MiniMax-M2.7` selections still resolve for
+existing evaluation configurations.
 
 | Model ID | Context window | Input modalities | Thinking |
 | --- | ---: | --- | --- |
+| `MiniMax-M3.1-Flash` | 1,000,000 | text, image, video | adaptive only |
 | `MiniMax-M3` | 1,000,000 | text, image, video | adaptive or disabled |
-| `MiniMax-M2.7` | 204,800 | text | always on |
+
+Flash supports up to 524,288 output tokens, including thinking. The reader keeps
+its existing generation budget unless `--max-tokens` is supplied. Flash uses the
+API's default `max` reasoning effort; `--no-think` is rejected for direct Flash
+requests. Direct M3 requests support `--no-think`. ReAct preserves the complete
+MiniMax assistant message, including separate reasoning, between retrieval turns.
 
 Pricing is in USD per million tokens:
 
 | Model ID | Service tier | Input range | Input | Output | Cache read | Cache write |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
+| `MiniMax-M3.1-Flash` | default | all | $0.15 | $0.60 | $0.015 | - |
 | `MiniMax-M3` | standard | <= 512k input tokens | $0.30 | $1.20 | $0.06 | - |
 | `MiniMax-M3` | standard | > 512k input tokens | $0.60 | $2.40 | $0.12 | - |
 | `MiniMax-M3` | priority | <= 512k input tokens | $0.45 | $1.80 | $0.09 | - |
 | `MiniMax-M3` | priority | > 512k input tokens | $0.90 | $3.60 | $0.18 | - |
-| `MiniMax-M2.7` | standard | all | $0.30 | $1.20 | $0.06 | $0.375 |
 
 ```bash
 export MINIMAX_API_KEY=your-api-key
 uv run python run_bench.py \
   --task simpleqa \
-  --model MiniMax-M3 \
+  --model MiniMax-M3.1-Flash \
   --model-context-length 1000000 \
   --num-examples 1
 ```
