@@ -93,6 +93,18 @@ claude -p "screenshot https://arxiv.org/abs/2404.12387 and explain the key findi
 Or use the slash command in an interactive session: `/screenshot https://example.com`.
 No MCP server, no backend: the skill just calls `pixelshot` (Playwright/CDP) on your machine.
 
+**opencode** users get the same `screenshot` tool via the `@startrail/pixelbrowse` npm package
+— with `pixelshot` on `PATH`, add it to `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@startrail/pixelbrowse"]
+}
+```
+
+See [`plugin/opencode/`](plugin/opencode/) for details.
+
 ## How it works
 
 <p align="center">
@@ -174,8 +186,11 @@ pixelrag serve --index-dir ./my_index --port 30001
 
 No GPU required — runs on macOS (Apple Silicon) or any machine with Python 3.10+.
 
+PDF rendering needs the `pdf` extra and poppler (`brew install poppler`, or
+`apt-get install poppler-utils` on Debian/Ubuntu).
+
 ```bash
-pip install 'pixelrag[index]'
+pip install 'pixelrag[index,pdf]'
 
 # 1. Grab a sample PDF (or use your own)
 curl -L -o paper.pdf https://raw.githubusercontent.com/StarTrail-org/PixelRAG/main/assets/pixelrag-paper.pdf

@@ -14,6 +14,9 @@ Usage:
 
     # OpenRouter API (no local vLLM)
     python run_bench.py --task simpleqa --model openai/gpt-4 --open-router --api-key sk-or-v1-xxx
+
+    # OrcaRouter API (no local vLLM)
+    python run_bench.py --task simpleqa --model anthropic/claude-opus-4-8 --orcarouter
 """
 
 import argparse
@@ -68,7 +71,13 @@ from lib.benchmarks import (
     load_webqa_data,
     load_worldvqa_data,
 )
-from lib.model_config import get_model_config, get_output_filename
+from lib.model_config import (
+    ORCAROUTER_API_BASE,
+    get_atlascloud_config,
+    get_cheaperinference_config,
+    get_model_config,
+    get_output_filename,
+)
 from lib.retrieval import (
     _get_query_image_path_for_example,
     _save_task_query_image,
@@ -317,7 +326,7 @@ async def process_example(
                 "dataset_name": task_name,
                 "retrieval_type": retrieval_result.retrieval_type,
                 "has_retrieval_content": retrieval_result.has_content,
-                "usage": usage,
+                "usage": _token_usage(usage),
                 "success": True,
                 "timing": {
                     "retrieval_time": retrieval_time,
@@ -502,6 +511,11 @@ def _hits_to_retrieval_result(hits: list[dict]) -> "RetrievalResult":  # noqa: F
     )
 
 
+def _token_usage(usage: dict) -> dict:
+    """Token counts only: drop private keys carried alongside them."""
+    return {k: v for k, v in usage.items() if not k.startswith("_")}
+
+
 async def process_example_react(
     llm_client: LLMClient,
     retriever,
@@ -575,7 +589,9 @@ async def process_example_react(
                 # Extract search query and do another round
                 search_query = match.group(1).strip()
                 all_search_queries.append(search_query)
-                assistant_responses.append(generated_text)
+                assistant_responses.append(
+                    usage.get("_assistant_message", generated_text)
+                )
                 logger.info(
                     f"ReAct [{example_id}] turn {turn + 1}: searching '{search_query[:80]}'"
                 )
@@ -613,7 +629,12 @@ async def process_example_react(
                     ],
                 }
                 if turn_idx < len(assistant_responses):
-                    turn_info["assistant_response"] = assistant_responses[turn_idx]
+                    response = assistant_responses[turn_idx]
+                    turn_info["assistant_response"] = (
+                        response.get("content", "")
+                        if isinstance(response, dict)
+                        else response
+                    )
                 elif turn_idx == len(retrieval_results) - 1:
                     # Last turn: the final_response is the answer
                     turn_info["assistant_response"] = final_response
@@ -634,7 +655,7 @@ async def process_example_react(
                 "dataset_name": task_name,
                 "retrieval_type": "local_api_react",
                 "has_retrieval_content": any(r.has_content for r in retrieval_results),
-                "usage": usage,
+                "usage": _token_usage(usage),
                 "success": True,
                 "react_turns": turns_used,
                 "react_search_queries": all_search_queries,
@@ -950,10 +971,25 @@ async def run_async(args):
         )
 
     # Get model configuration
-    model_config = get_model_config(args.model)
+    if args.atlascloud:
+        model_config = get_atlascloud_config(args.model, args.api_key)
+    elif args.cheaperinference:
+        model_config = get_cheaperinference_config(args.model, args.api_key)
+    else:
+        model_config = get_model_config(args.model)
 
     # Handle OpenRouter API
-    if args.open_router:
+    if args.atlascloud:
+        api_base = model_config["api_base"]
+        api_key = model_config["api_key"]
+        model = model_config["model"]
+        logger.info(f"Using Atlas Cloud API with model: {model}")
+    elif args.cheaperinference:
+        api_base = model_config["api_base"]
+        api_key = model_config["api_key"]
+        model = model_config["model"]
+        logger.info(f"Using Cheaper Inference API with model: {model}")
+    elif args.open_router:
         api_base = "https://openrouter.ai/api/v1"
         if args.api_key and args.api_key != "dummy":
             api_key = args.api_key
@@ -977,6 +1013,26 @@ async def run_async(args):
             )
         logger.info(f"Using Commonstack API with model: {args.model}")
         model = args.model
+    elif args.orcarouter:
+        api_base = ORCAROUTER_API_BASE
+        if args.api_key and args.api_key != "dummy":
+            api_key = args.api_key
+        else:
+            api_key = os.getenv("ORCAROUTER_API_KEY")
+        if not api_key or api_key == "dummy":
+            raise ValueError(
+                "OrcaRouter API key required. Set --api-key or ORCAROUTER_API_KEY environment variable."
+            )
+        logger.info(f"Using OrcaRouter API with model: {args.model}")
+        model = args.model
+    elif args.litellm:
+        # LiteLLM SDK: the provider-prefixed --model selects the backend, and
+        # credentials come from each provider's own env var (or --api-base for a
+        # LiteLLM proxy). Keep both optional so blank values fall through to env.
+        model = args.model
+        api_base = args.api_base or ""
+        api_key = args.api_key or "dummy"
+        logger.info(f"Using LiteLLM SDK with model: {args.model}")
     else:
         # Override with command-line args if provided
         # For Gemini, api_base from config is None, so use command-line arg or default
@@ -1097,6 +1153,12 @@ async def run_async(args):
 
     retriever, mode = build_retriever(args, examples, model, api_base, api_key)
     # (retriever selection logic moved to simpleqa/retriever_factory.py)
+
+    if args.dump_retrieval:
+        from lib.dump_retrieval import dump_retrieval
+
+        await dump_retrieval(args, examples, retriever, run_metadata)
+        return
     # 3. Initialize LLM client
     llm_client = LLMClient(
         model=model,
@@ -1106,7 +1168,15 @@ async def run_async(args):
         max_context_tokens=args.model_context_length,
         timeout=args.timeout,
         enable_thinking=(False if args.no_think else None),
-        force_openai_compat=(args.open_router or args.commonstack),
+        force_openai_compat=(
+            args.open_router
+            or args.commonstack
+            or args.orcarouter
+            or args.atlascloud
+            or args.cheaperinference
+        ),
+        use_litellm=args.litellm,
+        retry_requests=not args.atlascloud,
     )
 
     # 3b. Create pixel-compressed encoder for generation if requested
@@ -1298,6 +1368,14 @@ def main():
         action="store_true",
         help="Overwrite output file if it exists",
     )
+    parser.add_argument(
+        "--dump-retrieval",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Retrieve only (no reader) and write records + retrieved tiles to DIR "
+        "(local-api retrieval only; resumable). See lib/dump_retrieval.py.",
+    )
 
     # API args
     parser.add_argument(
@@ -1322,6 +1400,28 @@ def main():
         "--commonstack",
         action="store_true",
         help="Use Commonstack API (https://api.commonstack.ai). Requires --api-key or COMMONSTACK_API_KEY env var.",
+    )
+    parser.add_argument(
+        "--orcarouter",
+        action="store_true",
+        help="Use OrcaRouter API (https://api.orcarouter.ai). Requires --api-key or ORCAROUTER_API_KEY env var.",
+    )
+    parser.add_argument(
+        "--atlascloud",
+        action="store_true",
+        help="Use Atlas Cloud with an exact catalog model ID. Requires --api-key or ATLASCLOUD_API_KEY.",
+    )
+    parser.add_argument(
+        "--cheaperinference",
+        action="store_true",
+        help="Use Cheaper Inference (https://api.cheaperinference.com/v1) with a bare model ID. Requires --api-key or CHEAPER_INFERENCE_API_KEY.",
+    )
+    parser.add_argument(
+        "--litellm",
+        action="store_true",
+        help="Route generation through the LiteLLM SDK (100+ providers via one "
+        "provider-prefixed --model, e.g. anthropic/claude-3-5-sonnet). Optional "
+        "--api-base points at a LiteLLM proxy; keys fall back to each provider's env var.",
     )
 
     # General args
@@ -1868,6 +1968,22 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.atlascloud and (
+        args.open_router or args.commonstack or args.orcarouter or args.litellm
+    ):
+        parser.error("--atlascloud cannot be combined with another provider flag")
+    if args.atlascloud and args.api_base:
+        parser.error("--atlascloud uses its fixed endpoint; omit --api-base")
+    if args.cheaperinference and (
+        args.open_router
+        or args.commonstack
+        or args.orcarouter
+        or args.atlascloud
+        or args.litellm
+    ):
+        parser.error("--cheaperinference cannot be combined with another provider flag")
+    if args.cheaperinference and args.api_base:
+        parser.error("--cheaperinference uses its fixed endpoint; omit --api-base")
 
     # Validate mutually exclusive options
     mode_count = sum(

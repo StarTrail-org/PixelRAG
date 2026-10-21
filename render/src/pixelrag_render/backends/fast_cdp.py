@@ -34,7 +34,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .page_metrics import CONTENT_BOTTOM_JS
+from .page_metrics import CONTENT_BOTTOM_JS, truncation_reason
 
 logger = logging.getLogger("pixelrag_render.backends.fast_cdp")
 
@@ -492,9 +492,11 @@ async def _run_render(
                         },
                     )
                     page_h = r["result"]["result"]["value"]
-                    if not page_h or page_h <= 0:
+                    height_measured = bool(page_h) and page_h > 0
+                    if not height_measured:
                         page_h = tile_height
                 except Exception:
+                    height_measured = False
                     page_h = tile_height
 
                 n_tiles = max(1, (page_h + tile_height - 1) // tile_height)
@@ -586,13 +588,29 @@ async def _run_render(
                     n_written += 1
                     tile_names.append(f"tile_{t:04d}.jpg")
 
-                # Write manifest
+                # Write manifest. `complete` has to mean something here too —
+                # see page_metrics.truncation_reason; the standard path applies
+                # the identical rule, so a manifest reads the same whichever
+                # Chrome the capture happened to run on.
+                reason = truncation_reason(
+                    page_h, tile_height, measured=height_measured
+                )
+                if reason:
+                    logger.warning(
+                        "[w%d] %s: %s — marking the manifest incomplete",
+                        wi,
+                        art_path,
+                        reason,
+                    )
+
                 manifest = {
                     "path": art_path,
                     "url": target_url,
                     "page_height": page_h,
+                    "tile_height": tile_height,
+                    "viewport_width": VIEWPORT_WIDTH,
                     "tiles": tile_names,
-                    "complete": True,
+                    "complete": reason is None,
                 }
                 with open(tile_dir / "tiles.json", "w") as f:
                     json.dump(manifest, f)
