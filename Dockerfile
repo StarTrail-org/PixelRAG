@@ -127,4 +127,9 @@ COPY serve/src ./serve/src
 
 EXPOSE 8000
 
+# The image runs as root, so Chrome's setuid/namespace sandbox is unavailable and
+# pixelshot disables it automatically (logging a warning). Chrome's own sandbox
+# inside a container needs --cap-add=SYS_ADMIN or a seccomp profile; without those
+# a non-root USER stops Chrome launching at all. Rely on container isolation here,
+# and do not point this image at untrusted pages without it. See README.
 CMD ["pixelrag", "serve", "--host", "0.0.0.0", "--port", "8000"]

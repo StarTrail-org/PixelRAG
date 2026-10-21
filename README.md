@@ -317,6 +317,33 @@ index:
   # Set append: true or recreate: true when the collection already exists.
 ```
 
+### Run the API in Docker
+
+`Dockerfile` builds a two-stage image that installs the `serve` extra and a pinned Chromium,
+and `docker-compose.yml` runs `pixelrag serve` on port 8000 against mounted index and tile
+volumes:
+
+```bash
+docker compose up --build
+# then query it
+curl -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"queries": [{"text": "What is the capital of France?"}], "n_docs": 5}'
+```
+
+Populate the `pixelrag-index` volume with an index built as described above; the container
+reads it read-only and writes only tiles.
+
+Two things to know before using it:
+
+- **Nothing in CI builds this image.** It is best-effort and can drift when dependencies or
+  source paths move, so build it yourself before relying on it.
+- **The container runs as root, so Chrome renders with its sandbox disabled.** Chrome's
+  sandbox inside a container requires `--cap-add=SYS_ADMIN` or a tailored seccomp profile,
+  and a non-root `USER` without those stops Chrome launching entirely. Container isolation
+  is therefore the only boundary around the renderer — keep the container isolated and do
+  not point it at untrusted pages otherwise.
+
 ### Training
 
 Fine-tuning lives in `train/` — a **separate uv project** (`wiki-screenshot-training`) with its own
