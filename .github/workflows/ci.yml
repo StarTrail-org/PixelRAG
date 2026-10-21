@@ -85,6 +85,14 @@ jobs:
         run: uv run pixelshot install-chrome
 
       - name: Run tests
+        env:
+          # Chrome's sandbox cannot initialise on the hosted runner (no user
+          # namespaces, no SUID helper), so every render test fails to launch
+          # Chrome at all: "Failed to connect to Chrome on port 12000".
+          # Opt out here rather than weakening sandbox_args(): the runner is a
+          # disposable VM rendering known fixtures, while real users -- who
+          # point this at pages they do not control -- keep the sandbox on.
+          PIXELSHOT_NO_SANDBOX: "1"
         run: uv run pytest tests/ -v
 
   plugin-validate:
