@@ -26,6 +26,26 @@ import urllib.request
 from pathlib import Path
 
 INSTALL_DIR = Path.home() / ".cache" / "pixelrag" / "chrome"
+
+
+def free_port() -> int:
+    """An unused localhost TCP port for --remote-debugging-port.
+
+    A fixed port (or a fixed base + worker id) collides across processes: a
+    second pixelshot run launches Chrome on a port the first already owns, its
+    CDP client attaches to the *first* process's browser, and that connection
+    dies the moment the first run tears its Chrome down -- surfacing as
+    ConnectionResetError or an empty result list. Asking the OS for a port makes
+    concurrent renders on one machine independent. See issue #54 for the
+    matching --user-data-dir collision.
+    """
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 VERSION_FILE = "version.json"
 logger = logging.getLogger(__name__)
 

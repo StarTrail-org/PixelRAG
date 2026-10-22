@@ -35,7 +35,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..chrome import sandbox_args
+from ..chrome import free_port, sandbox_args
 from .page_metrics import CONTENT_BOTTOM_JS, truncation_reason
 
 logger = logging.getLogger("pixelrag_render.backends.cdp")
@@ -754,13 +754,12 @@ async def _run_batch(
 
     stats = {"done": 0, "failed": 0}
     results: list[Path] = []
-    base_port = 9400
 
     actual_workers = min(num_workers, len(urls))
     workers = [
         _worker(
             chrome_path,
-            base_port + wid,
+            free_port(),
             work_queue,
             output_dir,
             tile_height,
