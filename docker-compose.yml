@@ -11,9 +11,10 @@ services:
       PIXELRAG_TILES_DIR: /data/tiles
       PIXELRAG_ARTICLES_JSON: /data/index/articles.json
     volumes:
-      - pixelrag-index:/data/index:ro
-      - pixelrag-tiles:/data/tiles
-
-volumes:
-  pixelrag-index:
-  pixelrag-tiles:
+      # Host paths, not named volumes. The index is built on the host
+      # (`pixelrag index build`), and nothing in this stack can write a
+      # read-only named volume — so a first run against an empty one exited
+      # before uvicorn started. ./data/index rather than ./index: ./index is
+      # the pixelrag_index source package.
+      - ./data/index:/data/index:ro
+      - ./data/tiles:/data/tiles

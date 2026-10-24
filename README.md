@@ -324,10 +324,18 @@ index:
 ### Run the API in Docker
 
 `Dockerfile` builds a two-stage image that installs the `serve` extra and a pinned Chromium,
-and `docker-compose.yml` runs `pixelrag serve` on port 8000 against mounted index and tile
-volumes:
+and `docker-compose.yml` runs `pixelrag serve` on port 8000 against the index and tiles you
+mount from the host.
+
+**Build an index first.** The container mounts `./data/index` read-only and cannot create one,
+so `docker compose up` against an empty directory exits before the server starts — `pixelrag
+serve` opens the index and `articles.json` during startup. Point `output:` at it in your
+`pixelrag.yaml` (as above), then:
 
 ```bash
+mkdir -p data/index data/tiles
+pixelrag index build   # writes index.faiss, metadata.npz and articles.json to ./data/index
+
 docker compose up --build
 # then query it
 curl -X POST http://localhost:8000/search \
@@ -335,13 +343,14 @@ curl -X POST http://localhost:8000/search \
   -d '{"queries": [{"text": "What is the capital of France?"}], "n_docs": 5}'
 ```
 
-Populate the `pixelrag-index` volume with an index built as described above; the container
-reads it read-only and writes only tiles.
-
-Two things to know before using it:
+Three things to know before using it:
 
 - **Nothing in CI builds this image.** It is best-effort and can drift when dependencies or
   source paths move, so build it yourself before relying on it.
+- **On Apple Silicon the image builds without a renderer.** The pinned `headless_shell` is
+  published for linux-x64 only, so the build skips it on other architectures: search over a
+  prebuilt index works, on-demand rendering does not. For a renderer-capable image, build for
+  amd64 (emulated, and slower) by adding `platform: linux/amd64` to the `pixelrag-api` service.
 - **The container runs as root, so Chrome renders with its sandbox disabled.** Chrome's
   sandbox inside a container requires `--cap-add=SYS_ADMIN` or a tailored seccomp profile,
   and a non-root `USER` without those stops Chrome launching entirely. Container isolation

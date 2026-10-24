@@ -62,7 +62,21 @@ COPY index/src ./index/src
 COPY serve/src ./serve/src
 
 RUN uv sync --frozen --extra serve
-RUN uv run pixelshot install-chrome
+
+# The pinned headless_shell is published for linux-x64 only — install_chrome()
+# raises on anything else, which failed `docker compose up --build` outright on
+# Apple Silicon. Skip it off amd64 instead: the image still serves search over a
+# prebuilt index, and anything needing a renderer fails at run time with
+# chrome.py's own message. Build with --platform linux/amd64 for a
+# renderer-capable image. The mkdir keeps the runtime stage's COPY valid when
+# the install is skipped.
+ARG TARGETARCH
+RUN mkdir -p /root/.cache/pixelrag/chrome && \
+    arch="${TARGETARCH:-$(uname -m)}" && \
+    case "$arch" in \
+        amd64|x86_64) uv run pixelshot install-chrome ;; \
+        *) echo "skipping install-chrome: no prebuilt headless_shell for $arch" ;; \
+    esac
 
 
 FROM python:3.12-slim-bookworm AS runtime
