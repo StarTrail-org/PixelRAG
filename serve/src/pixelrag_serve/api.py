@@ -398,16 +398,20 @@ def _normalize_query_embeddings(queries: list[Query]) -> np.ndarray:
             detail="Pre-computed embeddings cannot be mixed with text/image fields in the same request.",
         )
 
+    # Check each vector before conversion: NumPy rejects ragged batches itself.
+    expected_dim = _state["dimension"]
+    for query in queries:
+        actual_dim = len(query.embedding)
+        if actual_dim != expected_dim:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Embedding dim mismatch: got {actual_dim}, expected {expected_dim}.",
+            )
+
     embeddings = np.asarray([q.embedding for q in queries], dtype=np.float32)
     if embeddings.ndim != 2:
         raise HTTPException(
             status_code=400, detail="Embeddings must have shape [batch, dim]."
-        )
-    expected_dim = _state["dimension"]
-    if embeddings.shape[1] != expected_dim:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Embedding dim mismatch: got {embeddings.shape[1]}, expected {expected_dim}.",
         )
 
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
