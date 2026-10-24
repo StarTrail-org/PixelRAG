@@ -1,0 +1,30 @@
+========================================
+  你的知识库目录 —— 把论文 PDF 放这里
+========================================
+
+【怎么添加论文】
+  用文件资源管理器，把你下载的 PDF 论文
+  直接复制 / 粘贴到这个文件夹里即可。
+  支持 .pdf / .html / .png / .jpg / .md / .txt 等格式。
+
+【怎么构建索引】
+  在项目根目录 D:\ccproject\PixelRAG 下运行：
+
+    .venv\Scripts\pixelrag.exe index build
+
+  首次构建会自动加载 Qwen3-VL-Embedding-2B 模型（已缓存，不需再下载）。
+
+【怎么启动搜索】
+  构建完成后运行：
+
+    .venv\Scripts\pixelrag.exe serve --index-dir D:/ccproject/PixelRAG/knowledge_index --port 30001
+
+  然后查询：
+
+    curl -X POST http://localhost:30001/search ^
+      -H "Content-Type: application/json" ^
+      -d "{\"queries\":[{\"text\":\"你的问题\"}],\"n_docs\":5}"
+
+【小提示】
+  - 攒一批论文（10~20 篇）再 build，效率更高（嵌入阶段会重新处理全部文档）。
+  - 新文件建议用日期/序号前缀命名，避免插入中间导致旧文档重渲染。
