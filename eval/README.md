@@ -234,6 +234,29 @@ Google SDK. `--api-key` overrides `CHEAPER_INFERENCE_API_KEY`, and other provide
 environment keys are never used. Do not combine this option with another provider
 flag or `--api-base`.
 
+## Runcrate readers
+
+[Runcrate](https://www.runcrate.ai/inference?utm_source=pixelrag&utm_medium=directory&utm_campaign=gpu_pricing)
+serves open models on an OpenAI-compatible API. Open models are free with your GitHub account.
+
+Select it explicitly with `--runcrate`; other readers are unchanged. Set
+`RUNCRATE_API_KEY` and use a vendor-prefixed model ID from
+`https://api.runcrate.ai/v1/models`:
+
+```bash
+export RUNCRATE_API_KEY=rc_live_...
+python run_bench.py --task simpleqa --model deepseek-ai/DeepSeek-V4.1-Flash \
+    --runcrate --num-examples 1 --max-concurrent 1 --max-tokens 4096
+```
+
+This text-only example does not use retrieval. DeepSeek V4.1 Flash reasons before it
+answers, so leave room in `--max-tokens`. For screenshot benchmarks, use
+`zai-org/GLM-5.3-Flash`, which accepts image input. Model IDs are forwarded
+unchanged to `https://api.runcrate.ai/v1` and never select the native Google SDK.
+`--api-key` overrides `RUNCRATE_API_KEY`, and other providers' environment keys
+are never used. Do not combine this option with another provider flag or
+`--api-base`.
+
 ## MiniMax readers
 
 Set `MINIMAX_API_KEY` and select `MiniMax-M3.1-Flash` (recommended) or `MiniMax-M3`.
