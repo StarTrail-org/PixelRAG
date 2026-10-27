@@ -45,5 +45,21 @@ jobs:
           # fallen several commits behind.
           before=$(git rev-parse HEAD)
           git fetch origin main
-          git merge --ff-only origin/main
+          if git merge-base --is-ancestor origin/main HEAD; then
+            git merge --ff-only origin/main
+          else
+            # A branch merged with GitHub's squash option has a different
+            # commit ID, so a box that had that exact branch checked out can
+            # diverge even though its files already are on main. Reconcile the
+            # history only when the merge adds nothing beyond origin/main;
+            # genuine local work still stops the deploy.
+            merge_tree=$(git merge-tree --write-tree HEAD origin/main)
+            if [ "$(git rev-parse "$merge_tree^{tree}")" != \
+                 "$(git rev-parse "origin/main^{tree}")" ]; then
+              echo "::error::deploy box has local commits with content not on main; refusing to deploy"
+              exit 1
+            fi
+            echo "Reconciling squash-merged history; merged tree matches origin/main"
+            git merge --no-edit origin/main
+          fi
           bash deploy/deploy.sh "$before"
