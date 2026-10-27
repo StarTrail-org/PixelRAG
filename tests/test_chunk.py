@@ -8,8 +8,9 @@ height-strip layout unchanged so existing indexes stay reproducible.
 
 import json
 
+import pytest
 from PIL import Image
-from pixelrag_embed.chunk import CHUNK_HEIGHT, chunk_article
+from pixelrag_embed.chunk import CHUNK_HEIGHT, chunk_article, process_shard
 
 
 def _make_tile(dir_path, w, h, viewport_width=None):
@@ -85,3 +86,143 @@ def test_short_wide_tile_splits_width(tmp_path):
     cs = _chunks(d)
     assert len(cs) == 2
     assert all(c["width"] <= 875 and c["height"] == 500 for c in cs)
+
+
+@pytest.mark.parametrize("old_width,new_width", [(875, 400), (400, 875)])
+def test_force_rechunks_when_viewport_changes(tmp_path, old_width, new_width):
+    d = _make_tile(tmp_path / "a.png.tiles", 875, 500, old_width)
+    chunk_article(str(d))
+    meta = json.loads((d / "tiles.json").read_text())
+    meta["viewport_width"] = new_width
+    (d / "tiles.json").write_text(json.dumps(meta))
+
+    assert chunk_article(str(d), force=True) is not None
+    manifest = json.loads((d / "chunks.json").read_text())
+    assert manifest["viewport_width"] == new_width
+    cs = manifest["chunks"]
+    expected_widths = [400, 400, 75] if new_width == 400 else [875]
+    assert [c["width"] for c in cs] == expected_widths
+    assert sorted(p.name for p in d.glob("chunk_*.png")) == sorted(
+        c["file"] for c in cs
+    )
+    for c in cs:
+        with Image.open(d / c["file"]) as img:
+            assert img.size == (c["width"], c["height"])
+
+
+@pytest.mark.parametrize(
+    "field,value", [("page_height", 500), ("tile_height", 4096), ("article_id", 42)]
+)
+def test_force_refreshes_manifest_metadata(tmp_path, field, value):
+    d = _make_tile(tmp_path / "a.png.tiles", 600, 500)
+    chunk_article(str(d))
+    meta = json.loads((d / "tiles.json").read_text())
+    meta[field] = value
+    (d / "tiles.json").write_text(json.dumps(meta))
+
+    assert chunk_article(str(d), force=True) is not None
+    assert json.loads((d / "chunks.json").read_text())[field] == value
+
+
+def test_force_removes_obsolete_article_id(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 600, 500)
+    meta = json.loads((d / "tiles.json").read_text())
+    (d / "tiles.json").write_text(json.dumps({**meta, "article_id": 42}))
+    chunk_article(str(d))
+    (d / "tiles.json").write_text(json.dumps(meta))
+
+    assert chunk_article(str(d), force=True) is not None
+    assert "article_id" not in json.loads((d / "chunks.json").read_text())
+
+
+def test_force_skips_unchanged_inputs(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 600, 500)
+    chunk_article(str(d))
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in d.iterdir()}
+    assert chunk_article(str(d), force=True) is None
+    assert before == {
+        p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in d.iterdir()
+    }
+
+
+def test_force_treats_explicit_default_width_as_unchanged(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 600, 500)
+    chunk_article(str(d))
+    meta = json.loads((d / "tiles.json").read_text())
+    meta["viewport_width"] = 875
+    (d / "tiles.json").write_text(json.dumps(meta))
+    assert chunk_article(str(d), force=True) is None
+
+
+def test_non_forced_call_still_reuses_existing_chunks(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 875, 500)
+    chunk_article(str(d))
+    before = (d / "chunks.json").read_bytes()
+    meta = json.loads((d / "tiles.json").read_text())
+    meta["viewport_width"] = 400
+    (d / "tiles.json").write_text(json.dumps(meta))
+    assert chunk_article(str(d)) is None
+    assert (d / "chunks.json").read_bytes() == before
+
+
+def test_force_dry_run_reports_new_layout_without_writes(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 875, 500)
+    chunk_article(str(d))
+    meta = json.loads((d / "tiles.json").read_text())
+    meta["viewport_width"] = 400
+    (d / "tiles.json").write_text(json.dumps(meta))
+    before = {p.name: p.read_bytes() for p in d.iterdir()}
+    result = chunk_article(str(d), force=True, dry_run=True)
+    assert result is not None
+    assert result["num_chunks"] == 3
+    assert result["files_written"] == 0
+    assert before == {p.name: p.read_bytes() for p in d.iterdir()}
+
+
+def test_force_recreates_missing_chunk(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 600, 500)
+    chunk_article(str(d))
+    (d / _chunks(d)[0]["file"]).unlink()
+    assert chunk_article(str(d), force=True) is not None
+    assert all((d / c["file"]).exists() for c in _chunks(d))
+
+
+def test_shard_force_propagates_metadata_changes(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 875, 500)
+    process_shard(str(tmp_path), progress=False)
+    meta = json.loads((d / "tiles.json").read_text())
+    meta["viewport_width"] = 400
+    (d / "tiles.json").write_text(json.dumps(meta))
+
+    result = process_shard(str(tmp_path), force=True, progress=False)
+    assert result["chunked"] == 1
+    assert result["chunks"] == 3
+    assert [c["width"] for c in _chunks(d)] == [400, 400, 75]
+
+
+def test_force_refreshes_incompatible_chunk_height(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 600, 500)
+    chunk_article(str(d))
+    manifest = json.loads((d / "chunks.json").read_text())
+    manifest["chunk_height"] = 128
+    (d / "chunks.json").write_text(json.dumps(manifest))
+    assert chunk_article(str(d), force=True) is not None
+    assert json.loads((d / "chunks.json").read_text())["chunk_height"] == CHUNK_HEIGHT
+
+
+def test_force_refreshes_changed_pixels(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 600, 500)
+    chunk_article(str(d))
+    Image.new("RGB", (600, 500), "black").save(d / "tile_0000.png")
+    assert chunk_article(str(d), force=True) is not None
+    with Image.open(d / _chunks(d)[0]["file"]) as img:
+        assert img.getpixel((0, 0)) == (0, 0, 0)
+
+
+def test_force_keeps_chunks_when_source_tiles_are_missing(tmp_path):
+    d = _make_tile(tmp_path / "a.png.tiles", 600, 500)
+    chunk_article(str(d))
+    (d / "tile_0000.png").unlink()
+    before = {p.name: p.read_bytes() for p in d.iterdir()}
+    assert chunk_article(str(d), force=True) is None
+    assert before == {p.name: p.read_bytes() for p in d.iterdir()}

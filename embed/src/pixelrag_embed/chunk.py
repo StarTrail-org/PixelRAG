@@ -70,7 +70,7 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
     Args:
         article_dir: Path to *.png.tiles/ directory.
         dry_run: If True, compute chunks but don't write files.
-        force: If True, rechunk even if chunks.json exists (compare tile hashes).
+        force: If True, compare tile hashes and metadata before reusing chunks.
 
     Returns:
         dict with chunking results, or None if up-to-date / skipped.
@@ -104,6 +104,11 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
     if not tile_hashes:
         return None
 
+    page_height = meta.get("page_height", 0)
+    viewport_width = meta.get("viewport_width", 875)
+    tile_height = meta.get("tile_height", 8192)
+    article_id = meta.get("article_id")  # propagate from tiles.json into chunks.json
+
     if os.path.exists(chunks_json):
         try:
             with open(chunks_json) as f:
@@ -120,21 +125,23 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
         if chunks_ok:
             if not force:
                 return None  # chunks exist, not forced, skip
-            # Force: also check tile hashes
+            # Identical pixels can still require a different layout or metadata.
             old_hashes = old_manifest.get("tile_hashes", {})
-            if old_hashes and old_hashes == tile_hashes:
-                return None  # tiles unchanged and chunks exist, skip
+            metadata_unchanged = (
+                old_manifest.get("page_height") == page_height
+                and old_manifest.get("viewport_width") == viewport_width
+                and old_manifest.get("tile_height") == tile_height
+                and old_manifest.get("chunk_height") == CHUNK_HEIGHT
+                and old_manifest.get("article_id") == article_id
+            )
+            if old_hashes and old_hashes == tile_hashes and metadata_unchanged:
+                return None  # inputs unchanged and chunks exist, skip
 
-        # Hashes differ or missing — delete old chunk files before rechunking
+        # Inputs differ or are missing — delete old chunk files before rechunking
         if not dry_run:
             for f in os.listdir(article_dir):
                 if f.startswith("chunk_") and f.endswith((".png", ".jpg", ".jpeg")):
                     os.unlink(os.path.join(article_dir, f))
-
-    page_height = meta.get("page_height", 0)
-    viewport_width = meta.get("viewport_width", 875)
-    tile_height = meta.get("tile_height", 8192)
-    article_id = meta.get("article_id")  # propagate from tiles.json into chunks.json
 
     chunks_info = []  # list of {tile, chunk_index, file, y_offset, height}
     files_written = 0
@@ -380,7 +387,7 @@ def main():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Rechunk even if chunks.json exists (compare tile hashes, skip if unchanged)",
+        help="Rechunk if tile hashes or metadata changed, even if chunks.json exists",
     )
     parser.add_argument(
         "--delete-tiles",
