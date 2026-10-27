@@ -190,6 +190,30 @@ images, instruction and nprobe as the LoRA cells of `reproduce.sh`. A hit whose 
 absent on the serve's disk is still recorded and listed in `<bench>/missing_tiles.jsonl`;
 `pack_bench.py` refuses to pack until each is filled, or listed in `--allow-missing` as lost.
 
+## Hosted reader integration policy
+
+For an OpenAI-compatible inference service, use the generic LiteLLM backend
+instead of adding a provider-specific CLI flag:
+
+```bash
+export HOSTED_MODEL_API_KEY=your-api-key
+python run_bench.py --task simpleqa \
+    --model openai/<provider-model-id> \
+    --api-base https://provider.example/v1 \
+    --api-key "$HOSTED_MODEL_API_KEY" \
+    --litellm --num-examples 1 --max-concurrent 1 --max-tokens 256
+```
+
+The `openai/` prefix selects LiteLLM's OpenAI-compatible transport; the provider's
+model ID follows it unchanged. Pass the key explicitly when using this path. For
+screenshot benchmarks, verify that the selected model accepts image input.
+
+A dedicated provider flag is reserved for a capability the generic path cannot
+express, such as provider-specific authentication or protocol behavior that
+affects evaluation. A PR adding one must document and test that missing
+capability. The provider-specific flags below remain for compatibility, but an
+OpenAI-compatible endpoint alone is not grounds for adding another flag.
+
 ## Atlas Cloud readers
 
 Select Atlas Cloud explicitly with `--atlascloud`; other readers are unchanged.
