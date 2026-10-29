@@ -635,6 +635,44 @@ async def _drain_queue(
             logger.warning("[w%d] FAIL %s: %s", worker_id, url, str(e)[:200])
 
 
+def _chrome_exit_detail(proc, log_path: str, lines: int = 5) -> str:
+    """Describe a Chrome that exited, with the tail of its stderr.
+
+    Empty if the process is still running after a short grace (the connect
+    failure then has some other cause, and blaming Chrome would be misleading).
+    """
+    try:
+        code = proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        return ""
+    try:
+        with open(log_path, errors="replace") as f:
+            tail = "".join(f.readlines()[-lines:]).strip()
+    except OSError:
+        tail = ""
+    return f": Chrome exited with code {code}" + (f"\n{tail}" if tail else "")
+
+
+def _report_worker_failures(outcomes: list, work_queue: asyncio.Queue, stats: dict):
+    """Log workers that died, and count the URLs they left in the queue as failed.
+
+    ``asyncio.gather(..., return_exceptions=True)`` hands exceptions back instead
+    of raising them, so without this a worker that fails before taking any URL
+    (Chrome never started) leaves ``done=0 failed=0`` and no explanation.
+    """
+    for wid, outcome in enumerate(outcomes):
+        if isinstance(outcome, BaseException):
+            logger.error("[w%d] worker failed: %s", wid, outcome)
+
+    unrendered = 0
+    while not work_queue.empty():
+        work_queue.get_nowait()
+        unrendered += 1
+    if unrendered:
+        stats["failed"] += unrendered
+        logger.error("%d URL(s) were never rendered", unrendered)
+
+
 async def _worker(
     chrome_path: str,
     port: int,
@@ -657,25 +695,34 @@ async def _worker(
     # of starting this headless renderer — navigation/screenshot then hang forever. A
     # unique dir also stops parallel workers from colliding on one profile. See issue #54.
     user_data_dir = tempfile.mkdtemp(prefix=f"pixelshot_chrome_{port}_")
-    proc = subprocess.Popen(
-        # `--headless=new`: the bare `--headless` is deprecated and hangs on modern
-        # Chrome (e.g. google-chrome 149); `=new` works on both stock Chrome and the
-        # patched headless_shell.
-        [
-            chrome_path,
-            f"--remote-debugging-port={port}",
-            "--headless=new",
-            f"--user-data-dir={user_data_dir}",
-        ]
-        + BROWSER_ARGS
-        + ["about:blank"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # Chrome's stderr goes inside the profile dir (removed below) so a launch
+    # failure can be reported with Chrome's own message.
+    chrome_log = os.path.join(user_data_dir, "chrome.stderr")
+    with open(chrome_log, "wb") as log:
+        proc = subprocess.Popen(
+            # `--headless=new`: the bare `--headless` is deprecated and hangs on modern
+            # Chrome (e.g. google-chrome 149); `=new` works on both stock Chrome and the
+            # patched headless_shell.
+            [
+                chrome_path,
+                f"--remote-debugging-port={port}",
+                "--headless=new",
+                f"--user-data-dir={user_data_dir}",
+            ]
+            + BROWSER_ARGS
+            + ["about:blank"],
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+        )
 
     try:
         await asyncio.sleep(3)
-        ws = await _connect_cdp(port)
+        try:
+            ws = await _connect_cdp(port)
+        except ConnectionError as exc:
+            raise ConnectionError(
+                f"{exc}{_chrome_exit_detail(proc, chrome_log)}"
+            ) from exc
         msg_id_ref = [0]
 
         await _setup_page(ws, msg_id_ref, viewport_w, tile_height, wait_network_idle)
@@ -776,7 +823,8 @@ async def _run_batch(
         )
         for wid in range(actual_workers)
     ]
-    await asyncio.gather(*workers, return_exceptions=True)
+    outcomes = await asyncio.gather(*workers, return_exceptions=True)
+    _report_worker_failures(outcomes, work_queue, stats)
 
     logger.info("Batch complete: done=%d failed=%d", stats["done"], stats["failed"])
     return results
@@ -898,7 +946,8 @@ async def _run_batch_attached(
         )
         for wid in range(actual_workers)
     ]
-    await asyncio.gather(*workers, return_exceptions=True)
+    outcomes = await asyncio.gather(*workers, return_exceptions=True)
+    _report_worker_failures(outcomes, work_queue, stats)
 
     logger.info(
         "Batch complete (attached): done=%d failed=%d", stats["done"], stats["failed"]
