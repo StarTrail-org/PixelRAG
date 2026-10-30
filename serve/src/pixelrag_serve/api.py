@@ -456,23 +456,39 @@ def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
 
 @functools.lru_cache(maxsize=8192)
 def _article_pages(article_id: int) -> str | None:
-    """Map of chunk files that exist on disk for an article: "0:0-8,1:0-4".
+    """Map of materialized article images: "0:0-8,1:0-4".
 
     Lets clients (notably the chat agent) page through an article without
-    probing nonexistent coordinates. Returns None when tiles are rendered
-    on demand (no files on disk) or the article dir can't be found.
+    probing nonexistent coordinates. Returns None in on-demand mode (even
+    for cached images) or when the article dir can't be found.
+    Flat-layout PDF page JPEGs are exposed at chunk 0, unless that page has
+    materialized chunks, whose range takes precedence. Source page indices
+    are retained, including gaps in a selected PDF page set.
     """
     if _state.get("ondemand") is not None:
         return None
-    probe = _resolve_path(article_id, 0, 0)
-    d = os.path.dirname(probe)
+    # A sparse PDF may have no page 0, so probing coordinate (0, 0) cannot
+    # locate its flat directory. Keep the existing resolver for sharded data.
+    flat_dir = os.path.join(_state["tiles_dir"], f"{article_id}.png.tiles")
+    d = flat_dir
+    if not os.path.isdir(d):
+        d = os.path.dirname(_resolve_path(article_id, 0, 0))
     if not os.path.isdir(d):
         return None
     tiles: dict[int, list[int]] = {}
+    pages: set[int] = set()
     for name in os.listdir(d):
         m = re.match(r"chunk_(\d{4})_(\d{2})\.(?:png|jpg|jpeg)$", name)
         if m:
             tiles.setdefault(int(m.group(1)), []).append(int(m.group(2)))
+        elif d == flat_dir:
+            # Match the PDF fallback supported by _resolve_path. Do not
+            # advertise sharded page files that the tile endpoint cannot serve.
+            m = re.match(r"tile_(\d{4})\.jpg$", name)
+            if m and os.path.isfile(os.path.join(d, name)):
+                pages.add(int(m.group(1)))
+    for page in pages:
+        tiles.setdefault(page, [0])
     if not tiles:
         return None
     return ",".join(f"{t}:{min(cs)}-{max(cs)}" for t, cs in sorted(tiles.items()))
