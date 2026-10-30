@@ -898,11 +898,15 @@ def main():
         "--index-dir", default=os.environ.get("PIXELRAG_INDEX_DIR", "./index")
     )
     parser.add_argument(
-        "--tiles-dir", default=os.environ.get("PIXELRAG_TILES_DIR", "./tiles")
+        "--tiles-dir",
+        default=os.environ.get("PIXELRAG_TILES_DIR"),
+        help="Tiles directory (default: <index-dir>/tiles if it exists, else ./tiles)",
     )
     parser.add_argument(
         "--articles-json",
-        default=os.environ.get("PIXELRAG_ARTICLES_JSON", "./articles.json"),
+        default=os.environ.get("PIXELRAG_ARTICLES_JSON"),
+        help="Articles file (default: <index-dir>/articles.json if it exists, "
+        "else ./articles.json)",
     )
     parser.add_argument(
         "--backend",
@@ -958,6 +962,15 @@ def main():
         help="kiwix book id for /content/<book>/ (auto-derived from --kiwix-url if omitted)",
     )
     args = parser.parse_args()
+    # `pixelrag index build` writes both next to the index, so look there first.
+    if args.articles_json is None:
+        candidate = os.path.join(args.index_dir, "articles.json")
+        args.articles_json = (
+            candidate if os.path.exists(candidate) else "./articles.json"
+        )
+    if args.tiles_dir is None:
+        candidate = os.path.join(args.index_dir, "tiles")
+        args.tiles_dir = candidate if os.path.isdir(candidate) else "./tiles"
     if args.qdrant_client_config:
         with open(args.qdrant_client_config) as f:
             args.qdrant_client_config = json.load(f)
