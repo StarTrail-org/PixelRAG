@@ -200,3 +200,25 @@ def test_invalid_article_does_not_block_valid_article_cleanup(article, tmp_path)
     assert (article / "tile_0000.png").is_file()
     assert not (other / "tile_0000.png").exists()
     assert (other / "chunk_0000_00.png").is_file()
+
+
+@pytest.mark.parametrize("skipped", ["corrupt", "narrow"])
+def test_real_chunker_skips_retain_all_sources(article, tmp_path, caplog, skipped):
+    omitted = article / "tile_0001.png"
+    if skipped == "corrupt":
+        omitted.write_bytes(b"not an image")
+    else:
+        # Too tall for the copy path and too narrow for one model patch.
+        Image.new("RGB", (10, 2000), "blue").save(omitted)
+    (article / "tiles.json").write_text(
+        json.dumps({"tiles": ["tile_0000.png", "tile_0001.png"]})
+    )
+    before = {p.name: p.read_bytes() for p in article.glob("tile_*.png")}
+    with caplog.at_level(logging.WARNING):
+        result = process_shard(str(tmp_path), delete_tiles=True, progress=False)
+    assert result["chunked"] == 1
+    assert result["tiles_deleted"] == 0
+    manifest = json.loads((article / "chunks.json").read_text())
+    assert {c["tile"] for c in manifest["chunks"]} == {"tile_0000.png"}
+    assert {p.name: p.read_bytes() for p in article.glob("tile_*.png")} == before
+    assert "tiles without replacement coverage" in caplog.text

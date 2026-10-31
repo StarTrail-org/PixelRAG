@@ -288,6 +288,7 @@ def _delete_tiles_in_shard(shard_dir: str) -> int:
                 chunks = manifest.get("chunks") if isinstance(manifest, dict) else None
                 if not isinstance(chunks, list) or not chunks:
                     raise ValueError("missing or empty chunk inventory")
+                # Reject bool: bool subclasses int.
                 if "num_chunks" in manifest and (
                     type(manifest["num_chunks"]) is not int
                     or manifest["num_chunks"] != len(chunks)
