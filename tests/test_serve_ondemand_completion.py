@@ -52,8 +52,8 @@ def test_incomplete_capture_is_not_published(capture):
     assert not _staging(od).exists()
 
 
-@pytest.mark.parametrize("completion", [True, "missing", None, 0])
-def test_complete_and_legacy_capture_publish_real_chunks(capture, completion):
+@pytest.mark.parametrize("completion", [True])
+def test_complete_capture_publishes_real_chunks(capture, completion):
     od, manifest, renderer = capture
     data = {"tiles": ["tile_0000.png"]}
     if completion != "missing":
@@ -81,6 +81,9 @@ def test_complete_and_legacy_capture_publish_real_chunks(capture, completion):
         "null",
         "false",
         json.dumps({"tiles": ["tile_0000.png"], "complete": False}),
+        json.dumps({"tiles": ["tile_0000.png"]}),
+        json.dumps({"tiles": ["tile_0000.png"], "complete": None}),
+        json.dumps({"tiles": ["tile_0000.png"], "complete": 0}),
     ],
 )
 def test_rejection_preserves_prior_cache_and_skips_chunking(

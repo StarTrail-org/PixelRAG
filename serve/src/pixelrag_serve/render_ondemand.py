@@ -163,7 +163,7 @@ class OnDemandTiles:
     def _render_and_chunk(self, article_id: int, title: str) -> None:
         """Publish newly rendered output only after checking its completion flag.
 
-        Missing flags remain legacy/unknown, as in the build-time cache policy.
+        Missing or falsey flags reject new output, matching embedding admission.
         This does not invalidate existing cache hits or verify tile coverage.
         """
         from pixelrag_embed.chunk import chunk_article
@@ -210,7 +210,7 @@ class OnDemandTiles:
             # malformed manifests raise; chunk_path treats failures as misses.
             with open(os.path.join(rendered, "tiles.json")) as f:
                 manifest = json.load(f)
-            if not isinstance(manifest, dict) or manifest.get("complete") is False:
+            if not isinstance(manifest, dict) or not manifest.get("complete", False):
                 return
             chunk_article(rendered)  # writes chunk_XXXX_YY.png + chunks.json
             dest = self._article_dir(article_id)
