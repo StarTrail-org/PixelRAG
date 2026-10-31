@@ -398,7 +398,7 @@ def _normalize_query_embeddings(queries: list[Query]) -> np.ndarray:
             detail="Pre-computed embeddings cannot be mixed with text/image fields in the same request.",
         )
 
-    # Check each vector before conversion: NumPy rejects ragged batches itself.
+    # Reject ragged input as 400 before NumPy raises an uncaught error (500).
     expected_dim = _state["dimension"]
     for query in queries:
         actual_dim = len(query.embedding)
