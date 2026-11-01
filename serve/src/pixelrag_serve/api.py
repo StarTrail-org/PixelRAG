@@ -424,37 +424,56 @@ def _normalize_query_embeddings(queries: list[Query]) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
-    """Resolve a materialized chunk path (on-demand cache is handled separately)."""
+def _article_tiles_dir(article_id: int) -> str | None:
+    """Find an article's flat or sharded tile directory, if it exists."""
     tiles_dir = _state["tiles_dir"]
-    shard_size = _state.get("shard_size", 8284)
     tiles_dirname = f"{article_id}.png.tiles"
-    chunk_name = f"chunk_{tile_index:04d}_{chunk_index:02d}.png"
+    flat_dir = os.path.join(tiles_dir, tiles_dirname)
+    if os.path.isdir(flat_dir):
+        return flat_dir
 
-    # Flat layout: tiles_dir/{article_id}.png.tiles/chunk_XXXX_YY.png
-    flat_path = os.path.join(tiles_dir, tiles_dirname, chunk_name)
-    if os.path.exists(flat_path):
-        return flat_path
-
-    # PDF pipeline stores whole pages as tile_XXXX.jpg (one chunk per page,
-    # no materialized chunk files) — fall back to the page image.
-    page_path = os.path.join(tiles_dir, tiles_dirname, f"tile_{tile_index:04d}.jpg")
-    if os.path.exists(page_path):
-        return page_path
-
-    # Sharded layout: tiles_dir/shard_XXX/sub/{article_id}.png.tiles/chunk_XXXX_YY.png
+    shard_size = _state.get("shard_size", 8284)
     top_shard = article_id // shard_size
     top_shard_dir = os.path.join(tiles_dir, f"shard_{top_shard:03d}")
     if os.path.isdir(top_shard_dir):
         for sub in sorted(os.listdir(top_shard_dir)):
             sub_path = os.path.join(top_shard_dir, sub, tiles_dirname)
             if os.path.isdir(sub_path):
-                return os.path.join(sub_path, chunk_name)
+                return sub_path
+    return None
+
+
+def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
+    """Resolve a materialized chunk path (on-demand cache is handled separately)."""
+    tiles_dir = _state["tiles_dir"]
+    chunk_name = f"chunk_{tile_index:04d}_{chunk_index:02d}.png"
+    article_dir = _article_tiles_dir(article_id)
+
+    if article_dir is not None:
+        is_flat = os.path.dirname(article_dir) == tiles_dir
+        chunk_path = os.path.join(article_dir, chunk_name)
+        if os.path.exists(chunk_path):
+            return chunk_path
+
+        # PDF page fallback is supported only in the flat layout.
+        if is_flat:
+            page_path = os.path.join(article_dir, f"tile_{tile_index:04d}.jpg")
+            if os.path.exists(page_path):
+                return page_path
+
+        # Sharded chunks may be served as padded/raw files by the caller.
+        if not is_flat:
+            return chunk_path
 
     # Fallback: shard path without checking existence (serve may run without tiles)
+    shard_size = _state.get("shard_size", 8284)
     top_shard = article_id // shard_size
     return os.path.join(
-        tiles_dir, f"shard_{top_shard:03d}", "?", tiles_dirname, chunk_name
+        tiles_dir,
+        f"shard_{top_shard:03d}",
+        "?",
+        f"{article_id}.png.tiles",
+        chunk_name,
     )
 
 
@@ -471,21 +490,17 @@ def _article_pages(article_id: int) -> str | None:
     """
     if _state.get("ondemand") is not None:
         return None
-    # A sparse PDF may have no page 0, so probing coordinate (0, 0) cannot
-    # locate its flat directory. Keep the existing resolver for sharded data.
-    flat_dir = os.path.join(_state["tiles_dir"], f"{article_id}.png.tiles")
-    d = flat_dir
-    if not os.path.isdir(d):
-        d = os.path.dirname(_resolve_path(article_id, 0, 0))
-    if not os.path.isdir(d):
+    d = _article_tiles_dir(article_id)
+    if d is None:
         return None
+    is_flat = os.path.dirname(d) == _state["tiles_dir"]
     tiles: dict[int, list[int]] = {}
     pages: set[int] = set()
     for name in os.listdir(d):
         m = re.match(r"chunk_(\d{4})_(\d{2})\.(?:png|jpg|jpeg)$", name)
         if m:
             tiles.setdefault(int(m.group(1)), []).append(int(m.group(2)))
-        elif d == flat_dir:
+        elif is_flat:
             # Match the PDF fallback supported by _resolve_path. Do not
             # advertise sharded page files that the tile endpoint cannot serve.
             m = re.match(r"tile_(\d{4})\.jpg$", name)
