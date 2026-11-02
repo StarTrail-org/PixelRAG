@@ -34,7 +34,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from ..chrome import sandbox_args
+from ..chrome import free_port, sandbox_args
 from .page_metrics import CONTENT_BOTTOM_JS, truncation_reason
 
 logger = logging.getLogger("pixelrag_render.backends.fast_cdp")
@@ -158,14 +158,6 @@ def compress_tile(raw_path: str, out_path: str, quality: int = 85) -> None:
 # ---------------------------------------------------------------------------
 # Chrome connection helpers (inlined to avoid circular deps)
 # ---------------------------------------------------------------------------
-
-_port_counter = 0
-
-
-def _next_base_port() -> int:
-    global _port_counter
-    _port_counter += 1
-    return 12000 + (_port_counter - 1) * 500
 
 
 async def _launch_chrome(chrome_path: str, port: int) -> tuple:
@@ -394,8 +386,6 @@ async def _run_render(
     compress_thread = threading.Thread(target=_compressor_thread, daemon=True)
     compress_thread.start()
 
-    base_port = _next_base_port()
-
     # Work-stealing queue
     work_q: asyncio.Queue = asyncio.Queue()
     for art in articles:
@@ -405,14 +395,12 @@ async def _run_render(
     connections: list[_Conn] = []
     frame_ids: list[str] = []
 
-    logger.info(
-        "Launching %d Chrome workers on ports %d-%d",
-        n_workers,
-        base_port,
-        base_port + n_workers - 1,
-    )
-    for i in range(n_workers):
-        ws, proc, user_data_dir = await _launch_chrome(chrome_path, base_port + i)
+    # One OS-assigned port per worker: a fixed base collides with any other
+    # pixelshot process on the machine (see chrome.free_port).
+    ports = [free_port() for _ in range(n_workers)]
+    logger.info("Launching %d Chrome workers on ports %s", n_workers, ports)
+    for port in ports:
+        ws, proc, user_data_dir = await _launch_chrome(chrome_path, port)
         conn = _Conn(ws, proc, user_data_dir)
         connections.append(conn)
 
