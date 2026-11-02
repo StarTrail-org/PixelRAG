@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Multi-GPU integration test for GradCache distributed correctness.
 
-Tests that gather_with_grad, loss*world_size, all_reduce(AVG), and no_sync
+Tests that gather_with_grad, all_reduce(AVG), and no_sync
 produce correct gradients by comparing against a full-memory reference
 that uses the same distributed primitives.
 
@@ -57,7 +57,7 @@ def multi_gpu_reference(model, q_chunks, d_chunks, logit_scale):
             d_embs.append(model(**chunk))
     d_emb = torch.cat(d_embs, dim=0)
 
-    # Same loss as grad_cache_loss: gather docs across ranks, scale by world_size
+    # Same loss as grad_cache_loss: gather docs across ranks
     with torch.autocast("cuda", dtype=torch.bfloat16):
         loss, acc = clip_loss(q_emb, d_emb, logit_scale, gather_enabled=True)
 
