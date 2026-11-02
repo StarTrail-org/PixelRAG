@@ -543,7 +543,21 @@ async def capture_url(
                 ws,
                 msg_id_ref,
                 "Runtime.evaluate",
-                {"expression": "document.body.innerText", "returnByValue": True},
+                {
+                    "expression": """
+                        (() => {
+                          for (const element of document.querySelectorAll('*')) {
+                            if (getComputedStyle(element).contentVisibility === 'auto') {
+                              element.style.setProperty(
+                                'content-visibility', 'visible', 'important'
+                              );
+                            }
+                          }
+                          return document.body.innerText;
+                        })()
+                    """,
+                    "returnByValue": True,
+                },
             )
             page_text = text_result.get("result", {}).get("value", "")
             if page_text:
