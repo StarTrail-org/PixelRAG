@@ -85,6 +85,18 @@ def test_pdf_navigation_search_and_get(tiles, pdf_pages, pages, expected):
         assert image.content == (article / f"tile_{int(page):04d}.jpg").read_bytes()
 
 
+def test_pdf_page_lookup_accepts_tiles_dir_with_trailing_slash(tiles, pdf_pages):
+    article = pdf_pages([2, 4])
+    api._state["tiles_dir"] = f"{tiles}/"
+    api._article_pages.cache_clear()
+
+    assert api._article_pages(9) == "1:0-0,3:0-0"
+    assert api._resolve_path(9, 1, 0) == str(article / "tile_0001.jpg")
+    response = TestClient(api.app).get("/tile/9/1/0")
+    assert response.status_code == 200
+    assert response.content == (article / "tile_0001.jpg").read_bytes()
+
+
 @pytest.mark.parametrize("layout", ["", "shard_000/sub"])
 def test_web_chunk_map_unchanged(tiles, layout):
     article = tiles / layout / "9.png.tiles"

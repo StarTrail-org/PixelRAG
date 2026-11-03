@@ -424,13 +424,13 @@ def _normalize_query_embeddings(queries: list[Query]) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _article_tiles_dir(article_id: int) -> str | None:
-    """Find an article's flat or sharded tile directory, if it exists."""
+def _article_tiles_dir(article_id: int) -> tuple[str, bool] | None:
+    """Find an article's tile directory and whether it uses the flat layout."""
     tiles_dir = _state["tiles_dir"]
     tiles_dirname = f"{article_id}.png.tiles"
     flat_dir = os.path.join(tiles_dir, tiles_dirname)
     if os.path.isdir(flat_dir):
-        return flat_dir
+        return flat_dir, True
 
     shard_size = _state.get("shard_size", 8284)
     top_shard = article_id // shard_size
@@ -439,7 +439,7 @@ def _article_tiles_dir(article_id: int) -> str | None:
         for sub in sorted(os.listdir(top_shard_dir)):
             sub_path = os.path.join(top_shard_dir, sub, tiles_dirname)
             if os.path.isdir(sub_path):
-                return sub_path
+                return sub_path, False
     return None
 
 
@@ -447,10 +447,10 @@ def _resolve_path(article_id: int, tile_index: int, chunk_index: int) -> str:
     """Resolve a materialized chunk path (on-demand cache is handled separately)."""
     tiles_dir = _state["tiles_dir"]
     chunk_name = f"chunk_{tile_index:04d}_{chunk_index:02d}.png"
-    article_dir = _article_tiles_dir(article_id)
+    article_location = _article_tiles_dir(article_id)
 
-    if article_dir is not None:
-        is_flat = os.path.dirname(article_dir) == tiles_dir
+    if article_location is not None:
+        article_dir, is_flat = article_location
         chunk_path = os.path.join(article_dir, chunk_name)
         if os.path.exists(chunk_path):
             return chunk_path
@@ -490,10 +490,10 @@ def _article_pages(article_id: int) -> str | None:
     """
     if _state.get("ondemand") is not None:
         return None
-    d = _article_tiles_dir(article_id)
-    if d is None:
+    article_location = _article_tiles_dir(article_id)
+    if article_location is None:
         return None
-    is_flat = os.path.dirname(d) == _state["tiles_dir"]
+    d, is_flat = article_location
     tiles: dict[int, list[int]] = {}
     pages: set[int] = set()
     for name in os.listdir(d):
