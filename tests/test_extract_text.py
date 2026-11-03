@@ -59,3 +59,30 @@ def test_extract_text_wins_over_the_turbo_path(tmp_path):
     text_file = Path(dirs[0]) / "text.md"
     assert text_file.exists(), "turbo path silently dropped the text extraction"
     assert "Turbo should not eat this" in text_file.read_text()
+
+
+def test_extract_text_includes_offscreen_content_visibility_sections(tmp_path):
+    """Text extraction should include sections skipped during the tile scroll."""
+    html = tmp_path / "content_visibility.html"
+    html.write_text(
+        """<!doctype html>
+        <html><head><meta charset="utf-8">
+        <style>
+          body { font: 20px sans-serif; margin: 0; }
+          .cv { content-visibility: auto; contain-intrinsic-size: auto 800px; padding: 40px; }
+          .spacer { height: 6000px; }
+        </style></head>
+        <body>
+          <section class="cv"><h1>TOP_MARKER pricing cards</h1>
+            <p>Plan A $10, Plan B $20</p></section>
+          <div class="spacer">filler</div>
+          <section class="cv"><h2>BOTTOM_MARKER footer</h2></section>
+        </body></html>"""
+    )
+
+    dirs = render_file(html, tmp_path / "tiles", tile_height=1568, extract_text=True)
+
+    text_file = Path(dirs[0]) / "text.md"
+    content = text_file.read_text()
+    assert "TOP_MARKER" in content
+    assert "BOTTOM_MARKER" in content
