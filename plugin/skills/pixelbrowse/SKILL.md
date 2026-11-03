@@ -52,6 +52,25 @@ pixelshot <url> --output /tmp/pixelbrowse --tile-height 1568 --viewport-width 12
 pixelshot document.pdf --output /tmp/pixelbrowse
 ```
 
+## Faster repeated captures
+
+By default, each URL or HTML `pixelshot` invocation starts and closes its own browser. For
+repeated captures, pixelshot can attach to a Chrome or Chromium instance that is already running
+with the Chrome DevTools Protocol (CDP) enabled. Start that browser with its debugging
+endpoint bound to loopback (for example, `127.0.0.1:9222`), then set the variable before
+starting Claude Code so the screenshot command inherits it:
+
+```bash
+export PIXELSHOT_CDP_URL=http://127.0.0.1:9222
+claude
+```
+
+The existing browser stays open; pixelshot creates a fresh tab for each input and closes
+only that tab. This avoids browser startup for later captures, but does not make page
+navigation or rendering faster. A CDP endpoint grants control of its browser and access
+to its signed-in session, so keep it on loopback and use a browser profile you trust.
+Unset `PIXELSHOT_CDP_URL` to return to launching a separate browser for each invocation.
+
 IMPORTANT: Always use `--tile-height 1568` for screenshots you will read visually.
 Claude's vision model downscales images with long edge > 1568px (Sonnet/Haiku) or 2576px (Opus).
 The default 8192px tile height will be downscaled and text becomes unreadable.
