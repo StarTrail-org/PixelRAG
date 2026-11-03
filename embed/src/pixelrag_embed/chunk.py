@@ -259,9 +259,12 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
 
 
 def _delete_tiles_in_shard(shard_dir: str) -> int:
-    """Delete tile_*.png for all articles with chunks.json in a shard.
+    """Delete source tiles only after validating an article's chunk inventory.
 
-    Tiles referenced directly as chunk files (h <= 1024) are preserved.
+    Every remaining source needs coverage and every declared chunk must be a
+    nonempty local regular file. PDF pages referenced as chunks are preserved.
+    This trusts the manifest's coverage; it does not decode images, verify pixel
+    geometry/freshness, or protect against concurrent filesystem mutation.
     """
     deleted = 0
     for sub in Path(shard_dir).iterdir():
@@ -270,27 +273,68 @@ def _delete_tiles_in_shard(shard_dir: str) -> int:
         for article_dir in sub.iterdir():
             if not article_dir.is_dir() or not article_dir.name.endswith(".png.tiles"):
                 continue
-            cj_path = article_dir / "chunks.json"
-            if not cj_path.exists():
+            tiles = [
+                p
+                for p in article_dir.iterdir()
+                if p.name.startswith("tile_") and p.suffix in (".png", ".jpg", ".jpeg")
+            ]
+            if not tiles:
                 continue
-            # Collect tile files referenced as chunks (small tiles, not split)
+            # Validate the entire inventory before unlinking anything. A chunk
+            # for one tile must not authorize deletion of another tile.
             try:
-                with open(cj_path) as f:
+                with open(article_dir / "chunks.json") as f:
                     manifest = json.load(f)
-                keep = {
-                    c["file"]
-                    for c in manifest.get("chunks", [])
-                    if c["file"].startswith("tile_")
-                }
-            except (json.JSONDecodeError, KeyError):
-                keep = set()
-            for f in article_dir.iterdir():
-                if f.name.startswith("tile_") and f.name.endswith(
-                    (".png", ".jpg", ".jpeg")
+                chunks = manifest.get("chunks") if isinstance(manifest, dict) else None
+                if not isinstance(chunks, list) or not chunks:
+                    raise ValueError("missing or empty chunk inventory")
+                # Reject bool: bool subclasses int.
+                if "num_chunks" in manifest and (
+                    type(manifest["num_chunks"]) is not int
+                    or manifest["num_chunks"] != len(chunks)
                 ):
-                    if f.name not in keep:
-                        f.unlink()
-                        deleted += 1
+                    raise ValueError("chunk count does not match inventory")
+                covered, keep = set(), set()
+                for chunk in chunks:
+                    if not isinstance(chunk, dict):
+                        raise TypeError("invalid chunk record")
+                    tile, filename = chunk.get("tile"), chunk.get("file")
+                    for name in (tile, filename):
+                        if (
+                            not isinstance(name, str)
+                            or not name
+                            or Path(name).name != name
+                            or "\\" in name
+                            or Path(name).suffix not in (".png", ".jpg", ".jpeg")
+                        ):
+                            raise ValueError(
+                                "chunk requires local tile/file image names"
+                            )
+                    path = article_dir / filename
+                    if (
+                        path.is_symlink()
+                        or not path.is_file()
+                        or path.stat().st_size == 0
+                    ):
+                        raise ValueError(f"missing or unsafe replacement: {filename}")
+                    if filename in keep:
+                        raise ValueError(f"duplicate replacement: {filename}")
+                    covered.add(tile)
+                    keep.add(filename)
+                if any(p.is_symlink() or not p.is_file() for p in tiles):
+                    raise ValueError("ambiguous source tile inventory")
+                uncovered = {p.name for p in tiles} - covered
+                if uncovered:
+                    raise ValueError(
+                        f"tiles without replacement coverage: {sorted(uncovered)}"
+                    )
+            except (OSError, TypeError, ValueError) as e:
+                logger.warning("Retaining source tiles in %s: %s", article_dir, e)
+                continue
+            for tile in tiles:
+                if tile.name not in keep:
+                    tile.unlink()
+                    deleted += 1
     return deleted
 
 
