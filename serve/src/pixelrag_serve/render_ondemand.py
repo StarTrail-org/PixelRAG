@@ -13,6 +13,7 @@ and the shared ``pixelrag_embed.chunk`` slicer (1024px chunks).
 
 import atexit
 import glob
+import json
 import os
 import shutil
 import socket
@@ -160,6 +161,11 @@ class OnDemandTiles:
         return cpath if os.path.exists(cpath) else None
 
     def _render_and_chunk(self, article_id: int, title: str) -> None:
+        """Publish newly rendered output only after checking its completion flag.
+
+        Missing or falsey flags reject new output, matching embedding admission.
+        This does not invalidate existing cache hits or verify tile coverage.
+        """
         from pixelrag_embed.chunk import chunk_article
 
         url = f"{self.kiwix_url}/content/{self.book}/{quote(title, safe='')}"
@@ -171,8 +177,8 @@ class OnDemandTiles:
         # subprocess is still needed: render_url internally uses asyncio.run() +
         # multiprocessing.Pool (fork), which deadlocks if called a 2nd time in this
         # long-lived serve process — a fresh subprocess per render avoids that.
-        cdp_url = self._ensure_chrome()
         try:
+            cdp_url = self._ensure_chrome()
             subprocess.run(
                 [
                     sys.executable,
@@ -195,18 +201,26 @@ class OnDemandTiles:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            dirs = glob.glob(os.path.join(staging, "*.png.tiles"))
+            if not dirs:
+                return
+            rendered = dirs[0]  # <sanitized-url>.png.tiles/ (has tiles.json)
+            # CLI success does not imply a complete capture. Check before
+            # chunking or touching an existing destination. Unreadable or
+            # malformed manifests raise; chunk_path treats failures as misses.
+            with open(os.path.join(rendered, "tiles.json")) as f:
+                manifest = json.load(f)
+            if not isinstance(manifest, dict) or not manifest.get("complete", False):
+                return
+            chunk_article(rendered)  # writes chunk_XXXX_YY.png + chunks.json
+            dest = self._article_dir(article_id)
+            shutil.rmtree(dest, ignore_errors=True)
+            # The rename is atomic, but replacing a prior directory (removed
+            # above) is not a transaction. Keep that existing publication policy.
+            os.replace(rendered, dest)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             # The shared Chrome may be wedged/dead — drop it so the next render restarts it.
             self._kill_chrome()
+        finally:
+            # Include Chrome startup, manifest parsing and chunking failures.
             shutil.rmtree(staging, ignore_errors=True)
-            return
-        dirs = glob.glob(os.path.join(staging, "*.png.tiles"))
-        if not dirs:
-            shutil.rmtree(staging, ignore_errors=True)
-            return
-        rendered = dirs[0]  # <sanitized-url>.png.tiles/ (has tiles.json)
-        chunk_article(rendered)  # writes chunk_XXXX_YY.png + chunks.json
-        dest = self._article_dir(article_id)
-        shutil.rmtree(dest, ignore_errors=True)
-        os.replace(rendered, dest)  # atomic; commit only after chunking succeeds
-        shutil.rmtree(staging, ignore_errors=True)
