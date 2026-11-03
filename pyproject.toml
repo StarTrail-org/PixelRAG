@@ -14,13 +14,12 @@ classifiers = [
 ]
 # Core stays light — rendering / screenshots only (no torch). The `pixelshot` command and
 # the `pixelrag` umbrella work on this alone. Heavy ML stages are opt-in extras below.
+# Every entry here is imported by the shipped packages; four that were not (cef-capi-py,
+# pymupdf, pyturbojpeg, anthropic) were removed — see #197. PDF rendering uses pdf2image
+# from the `pdf` extra, not pymupdf.
 dependencies = [
     "pillow>=10.0.0",
     "websockets>=12.0",
-    "pymupdf>=1.27.2.3",
-    "pyturbojpeg>=2.2.0",
-    "cef-capi-py>=131.3.5",
-    "anthropic>=0.102.0",
     # Light, pure-Python utilities the umbrella CLI and the non-torch stage code
     # (chunk / config parsing / progress bars) import at module load. Kept in core
     # — not the heavy `embed`/`index` extras — so `pixelrag chunk`, `pixelrag index`,
