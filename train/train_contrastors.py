@@ -3191,6 +3191,7 @@ def main():
                     query_process_fn=forward_query,
                     doc_process_fn=forward_doc,
                     hardness_alpha=args.hardness_alpha,
+                    loss_fn=active_loss_fn,
                 )
             debug_trace(trace_enabled, "train_loop: backward path returned")
             t_fwdbwd = time.time()
