@@ -31,6 +31,7 @@ dependencies = [
     # run_monaco.py's Claude grader/reader. Lives here rather than in the root
     # package's core deps, where nothing imported it (#197).
     "anthropic>=0.102.0",
+    "pandas>=2.0",
 ]
 
 [project.optional-dependencies]
