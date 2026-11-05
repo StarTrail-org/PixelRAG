@@ -258,6 +258,35 @@ Google SDK. `--api-key` overrides `CHEAPER_INFERENCE_API_KEY`, and other provide
 environment keys are never used. Do not combine this option with another provider
 flag or `--api-base`.
 
+## API Route readers
+
+[API Route](https://api-route.com) provides an OpenAI-compatible endpoint.
+Select it explicitly with `--api-route` and an exact chat-completions model ID
+available to your account (listed by authenticated `GET
+https://global.api-route.com/v1/models`). Existing reader defaults are unchanged.
+
+```bash
+export API_ROUTE_API_KEY=your_api_route_key
+export API_ROUTE_MODEL=your_chat_completions_model_id
+python run_bench.py --task simpleqa --model "$API_ROUTE_MODEL" \
+    --api-route --num-examples 1 --max-concurrent 1 --max-tokens 256
+```
+
+Set `API_ROUTE_MODEL` to your chosen model ID before running this text-only,
+no-retrieval example. For screenshot benchmarks, select a model whose image
+input support you have verified; a model-list entry alone does not establish
+that support. Model IDs are forwarded unchanged to
+`https://global.api-route.com/v1` through the OpenAI-compatible client, including
+IDs containing `gemini` (which do not select the native Google SDK).
+
+`--api-key` overrides `API_ROUTE_API_KEY`; other providers' environment keys are
+never used. Do not combine `--api-route` with another provider flag, `--litellm`,
+or `--api-base`. API Route uses the shared `LLMClient` retry policy for timeouts,
+connection errors and rate limits. SDK-level retries remain disabled so retries
+are controlled by the benchmark client rather than stacked across both layers.
+This is client-side behavior, not a guarantee of provider-side idempotency or
+billing behavior.
+
 ## MiniMax readers
 
 Set `MINIMAX_API_KEY` and select `MiniMax-M3.1-Flash` (recommended) or `MiniMax-M3`.
