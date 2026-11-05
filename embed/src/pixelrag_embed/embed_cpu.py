@@ -142,18 +142,33 @@ def scan_chunks(shard_dir: str) -> list[dict]:
     return items
 
 
+def _save_checkpoint(path: Path, embeddings: np.ndarray, done: int) -> None:
+    """Atomically persist a resume checkpoint holding the first `done` rows."""
+    tmp = path.parent / (path.name + ".tmp.npz")
+    np.savez(tmp, embeddings=embeddings[:done], done=np.int64(done))
+    os.replace(tmp, path)
+
+
 def embed_items(
     items: list[dict],
     model_name: str,
     device: str = "cpu",
     instruction: str = "",
-) -> np.ndarray:
-    """Embed image items using transformers on the given device."""
+    checkpoint_dir: str | None = None,
+    checkpoint_every: int = 10,
+) -> tuple[np.ndarray, Path | None]:
+    """Embed image items using transformers on the given device.
+
+    When ``checkpoint_dir`` is set, progress is written to
+    ``<checkpoint_dir>/embed_checkpoint.npz`` every ``checkpoint_every``
+    chunks and resumed from there on restart, so an interrupted CPU embed
+    continues instead of restarting. Returns ``(embeddings, checkpoint_path)``.
+    """
     import torch
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
     device = _resolve_device(device)
-    dtype = torch.float32 if device == "cpu" else torch.float16
+    dtype = torch.bfloat16 if device == "cpu" else torch.float16
 
     logger.info("Loading model %s on %s (%s)...", model_name, device, dtype)
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
@@ -170,9 +185,36 @@ def embed_items(
     dim = model.config.text_config.hidden_size
     embeddings = np.zeros((len(items), dim), dtype=np.float16)
 
+    checkpoint_path = None
+    start = 0
+    if checkpoint_dir:
+        checkpoint_path = Path(checkpoint_dir) / "embed_checkpoint.npz"
+        if checkpoint_path.exists():
+            try:
+                with np.load(checkpoint_path) as ck:
+                    partial = ck["embeddings"]
+                    done = int(ck["done"])
+                if partial.shape == (done, dim) and 0 < done <= len(items):
+                    embeddings[:done] = partial
+                    start = done
+                    logger.info(
+                        "Resuming from checkpoint: %d/%d chunks already embedded",
+                        done,
+                        len(items),
+                    )
+                else:
+                    logger.warning(
+                        "Ignoring unusable checkpoint (shape=%s, done=%d)",
+                        partial.shape,
+                        done,
+                    )
+            except (OSError, ValueError, KeyError):
+                logger.warning("Ignoring unreadable checkpoint at %s", checkpoint_path)
+
     prefix = f"Instruct: {instruction}\n" if instruction else ""
 
-    for i, item in enumerate(tqdm(items, desc="Embedding")):
+    for i in tqdm(range(start, len(items)), desc="Embedding", initial=start):
+        item = items[i]
         img = Image.open(item["path"]).convert("RGB")
         img = _clamp_width(img)
 
@@ -202,7 +244,10 @@ def embed_items(
             last_idx = seq_lens - 1
             pooled = last_hidden[0, last_idx[0]]
             pooled = pooled / pooled.norm()
-            embeddings[i] = pooled.cpu().numpy().astype(np.float16)
+            embeddings[i] = pooled.cpu().float().numpy().astype(np.float16)
+
+        if checkpoint_path and (i + 1) % checkpoint_every == 0:
+            _save_checkpoint(checkpoint_path, embeddings, i + 1)
 
         # tqdm covers interactive runs but never reaches log files; when
         # stderr is not a TTY (nohup/CI/redirects) emit a periodic record so
@@ -210,7 +255,7 @@ def embed_items(
         if (i + 1) % 100 == 0 and not sys.stderr.isatty():
             logger.info("Embedded %d/%d", i + 1, len(items))
 
-    return embeddings
+    return embeddings, checkpoint_path
 
 
 def main():
@@ -230,6 +275,15 @@ def main():
         "--instruction", default="", help="Instruction prefix for queries"
     )
     parser.add_argument("--limit", type=int, default=None, help="Max chunks to embed")
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=1,
+        help="Save a resume checkpoint every N chunks (default: 1). Embedding "
+        "keeps all progress in memory; only the checkpoint survives a kill, so "
+        "this bounds what an OOM kill costs. The write is a few MB at most, so "
+        "saving after every chunk is cheap.",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -244,8 +298,20 @@ def main():
         items = items[: args.limit]
     else:
         logger.info("Found %d chunks to embed", len(items))
-    embeddings = embed_items(
-        items, args.model, device=args.device, instruction=args.instruction
+
+    checkpoint_every = max(1, args.checkpoint_every)
+    logger.info(
+        "Checkpoint every %d chunk(s) -> %s (an OOM kill costs at most that much)",
+        checkpoint_every,
+        Path(args.output_dir) / "embed_checkpoint.npz",
+    )
+    embeddings, checkpoint_path = embed_items(
+        items,
+        args.model,
+        device=args.device,
+        instruction=args.instruction,
+        checkpoint_dir=args.output_dir,
+        checkpoint_every=checkpoint_every,
     )
 
     output_path = Path(args.output_dir) / "shard_000.npz"
@@ -258,6 +324,9 @@ def main():
         y_offsets=np.array([it["y_offset"] for it in items], dtype=np.int32),
         tile_heights=np.array([it["height"] for it in items], dtype=np.int32),
     )
+
+    if checkpoint_path and checkpoint_path.exists():
+        checkpoint_path.unlink()
 
     logger.info("Saved %d embeddings to %s", len(items), output_path)
 
