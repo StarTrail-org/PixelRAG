@@ -54,6 +54,40 @@ def _load_shards(embeddings_dir: str):
     return shard_files
 
 
+def _dedup_keys(aids, tiles, chunks):
+    """Pack (article_id, tile_index, chunk_index) rows into one int64 key each.
+
+    Each field's radix comes from its observed range, so distinct rows always
+    get distinct keys. Fixed decimal fields (the old article_id * 1e8 +
+    tile * 1e4 + chunk) collided as soon as an index reached 10_000 or went
+    negative. A single int64 array keeps np.unique on its fast path; a
+    structured array is about 4x slower (#140). Raises instead of packing
+    when the combined range does not fit in int64.
+    """
+    if len(aids) == 0:
+        return np.empty(0, dtype=np.int64)
+    fields = (aids, tiles, chunks)
+    lows = [int(f.min()) for f in fields]
+    spans = [int(f.max()) - low + 1 for f, low in zip(fields, lows)]
+    if spans[0] * spans[1] * spans[2] - 1 > np.iinfo(np.int64).max:
+        raise ValueError(
+            "(article_id, tile_index, chunk_index) ranges are too wide to pack "
+            f"into an int64 dedup key: spans {spans}"
+        )
+    # Built in place in one int64 array to keep peak memory low on big builds.
+    # Intermediate steps may wrap, but int64 arithmetic is modular and the
+    # final key is known to fit, so the result is exact.
+    keys = aids.astype(np.int64)
+    keys -= lows[0]
+    keys *= spans[1]
+    keys += tiles
+    keys -= lows[1]
+    keys *= spans[2]
+    keys += chunks
+    keys -= lows[2]
+    return keys
+
+
 def _merge_all_shards(shard_files):
     """Single-pass: concat all shards, then numpy-vectorized global dedup.
 
@@ -102,14 +136,9 @@ def _merge_all_shards(shard_files):
     print(f"Concat done: {row:,} vectors in {time.time() - t0:.0f}s")
 
     # Global dedup: numpy-vectorized unique on (article_id, tile, chunk)
-    # Pack into single int64: article_id * 1e8 + tile * 1e4 + chunk
     print("Deduplicating...")
     t1 = time.time()
-    keys = (
-        all_aids[:row] * 100_000_000
-        + all_tiles[:row].astype(np.int64) * 10_000
-        + all_chunks[:row].astype(np.int64)
-    )
+    keys = _dedup_keys(all_aids[:row], all_tiles[:row], all_chunks[:row])
     _, unique_idx = np.unique(keys, return_index=True)
     unique_idx.sort()  # preserve original order
     n_unique = len(unique_idx)
