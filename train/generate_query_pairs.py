@@ -29,21 +29,21 @@ Usage:
 Ported from Vis-RAG/agent/scripts/contrastive/generate_query_pairs.py
 """
 
+import argparse
+import asyncio
+import base64
 import json
 import os
-import re
 import random
-import base64
-import asyncio
-import argparse
+import re
 import time
-from pathlib import Path
-from io import BytesIO
 from collections import Counter
+from io import BytesIO
+from pathlib import Path
 
-from PIL import Image
 from google import genai
-from google.genai.types import HttpOptions, GenerateContentConfig
+from google.genai.types import GenerateContentConfig, HttpOptions
+from PIL import Image
 
 # Vertex AI config — requires gcloud ADC (gcloud auth application-default login)
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "wise-coyote-478119-h0")

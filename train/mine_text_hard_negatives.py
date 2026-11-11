@@ -14,14 +14,13 @@ negatives. No false-negative filtering is applied.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -258,8 +257,9 @@ def main() -> None:
     elapsed = time.time() - t0
 
     with open(args.output, "w") as f:
-        for pair in output_pairs:
-            f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+        f.writelines(
+            json.dumps(pair, ensure_ascii=False) + "\n" for pair in output_pairs
+        )
 
     n_with_negs = sum(1 for p in output_pairs if p["neg_hits"])
     logger.info("Wrote %d pairs to %s", len(output_pairs), args.output)

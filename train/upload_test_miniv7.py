@@ -13,7 +13,6 @@ from pathlib import Path
 from huggingface_hub import HfApi
 from huggingface_hub.errors import HfHubHTTPError
 
-
 DEFAULT_MINIV7_JSON = Path("training/data/test_miniv7.json")
 DEFAULT_TILES_DIR = Path("/home/user/Vis-RAG/agent/tiles-hard-mini-v7")
 

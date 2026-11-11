@@ -20,7 +20,6 @@ import os
 import shutil
 from pathlib import Path
 
-
 DEFAULT_INPUT_JSONL = Path(
     "/home/user/wiki-screenshot-training/training/data/natrual_filtered_v2/"
     "lite-query-v2-full-filtered-hn.jsonl"

@@ -1,1 +1,0 @@
-../../.claude/agents/code-critic.md
