@@ -26,7 +26,6 @@ import os
 import shutil
 from pathlib import Path
 
-
 DEFAULT_SPLIT_DIR = Path(
     "/home/user/wiki-screenshot-training/training/data/"
     "lite-query-v2-full-filtered-hn-v2-chunks/split"

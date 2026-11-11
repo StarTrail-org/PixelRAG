@@ -7,7 +7,6 @@ import argparse
 import json
 from pathlib import Path
 
-
 DEFAULT_SOURCE_JSONL = Path(
     "/home/user/wiki-screenshot-training/training/data/lite-query-v2-full-filtered.jsonl"
 )

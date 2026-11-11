@@ -18,19 +18,19 @@ Resume:
 import argparse
 import datetime
 import functools
+import io
 import json
 import logging
 import os
 import signal
-import io
 import sys
 import time
 import urllib.parse
-from urllib.parse import unquote
-from pathlib import Path
 from contextlib import nullcontext
+from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import unquote
 
 import numpy as np
 import torch
@@ -786,9 +786,9 @@ def init_chat_templates(processor):
     dt_idx = dt_text.index("PLACEHOLDER")
     _DOC_TEXT_PREFIX = dt_text[:dt_idx]
     _DOC_TEXT_SUFFIX = dt_text[dt_idx + len("PLACEHOLDER") :]
-    logger.info(f"Query prefix: {repr(_QUERY_PREFIX)}")
-    logger.info(f"Doc image template: {repr(_DOC_IMAGE_TMPL[:80])}...")
-    logger.info(f"Doc text prefix: {repr(_DOC_TEXT_PREFIX)}")
+    logger.info(f"Query prefix: {_QUERY_PREFIX!r}")
+    logger.info(f"Doc image template: {_DOC_IMAGE_TMPL[:80]!r}...")
+    logger.info(f"Doc text prefix: {_DOC_TEXT_PREFIX!r}")
 
 
 def process_queries(processor, queries):
@@ -834,8 +834,7 @@ def make_text_collate_fn(processor, num_hard_negatives=0):
         for item in batch:
             doc_texts.append(item[1])  # positive passage
             neg_texts = item[2] if len(item) > 2 else []
-            for nt in neg_texts:
-                doc_texts.append(nt)
+            doc_texts.extend(neg_texts)
 
         query_inputs = process_queries(processor, list(queries))
         doc_inputs = process_doc_texts(processor, doc_texts)
@@ -1494,8 +1493,8 @@ def run_miniv6_eval(
     Args:
         output_path: If set, save per-example results as JSONL.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     import re
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     raw = model.module if hasattr(model, "module") else model
     raw.eval()
@@ -1745,8 +1744,10 @@ def run_miniv6_eval(
     if output_path:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         with open(output_path, "w") as f:
-            for item in per_example_results:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            f.writelines(
+                json.dumps(item, ensure_ascii=False) + "\n"
+                for item in per_example_results
+            )
         logger.info(f"  Saved {len(per_example_results)} eval results to {output_path}")
 
     logger.info(f"  [profile] eval total: {time.time() - t_eval_start:.1f}s")

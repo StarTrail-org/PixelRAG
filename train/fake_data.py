@@ -136,8 +136,7 @@ def main():
 
     for path, data in [(train_path, train_pairs), (eval_path, eval_pairs)]:
         with open(path, "w") as f:
-            for item in data:
-                f.write(json.dumps(item) + "\n")
+            f.writelines(json.dumps(item) + "\n" for item in data)
         logger.info(f"Wrote {len(data)} pairs to {path}")
 
     logger.info("Done!")

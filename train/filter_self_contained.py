@@ -25,11 +25,11 @@ Cost estimate (gpt-4o, batch=50):
 Ported from Vis-RAG/agent/scripts/contrastive/filter_self_contained.py
 """
 
+import argparse
+import asyncio
 import json
 import os
 import re
-import asyncio
-import argparse
 import time
 
 import openai

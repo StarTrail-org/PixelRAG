@@ -34,10 +34,9 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import openai
 from google import genai
 from google.genai.types import GenerateContentConfig, HttpOptions
-import openai
-
 
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "wise-coyote-478119-h0")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
