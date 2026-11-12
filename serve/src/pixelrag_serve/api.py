@@ -870,13 +870,7 @@ def load(args):
     if getattr(args, "render_on_demand", False):
         from .render_ondemand import OnDemandTiles
 
-        book = args.zim_book or _derive_kiwix_book(args.kiwix_url)
-        if not book:
-            logger.warning(
-                "render-on-demand: could not derive kiwix book from %s "
-                "(pass --zim-book)",
-                args.kiwix_url,
-            )
+        book = _require_kiwix_book(args)
         cache = os.path.join(args.tiles_dir or "./tiles_cache", "_ondemand")
         _state["ondemand"] = OnDemandTiles(args.kiwix_url, book, cache)
         logger.info(
@@ -888,7 +882,12 @@ def load(args):
 
 
 def _derive_kiwix_book(kiwix_url: str) -> str:
-    """Read the kiwix-serve catalog and return the /content/<book> id."""
+    """Read the kiwix-serve catalog and return the /content/<book> id, or "".
+
+    Only kiwix-serve publishes this catalog. The bundled ``zim_server`` and
+    ``zim_server_async`` answer every path out of the ZIM itself, so the
+    request 404s there and the id has to come from --zim-book.
+    """
     import re
     import urllib.request
 
@@ -898,9 +897,36 @@ def _derive_kiwix_book(kiwix_url: str) -> str:
         ) as r:
             xml = r.read().decode()
         m = re.search(r'href="/content/([^"/]+)"', xml)
-        return m.group(1) if m else ""
-    except Exception:
-        return ""
+        if m:
+            return m.group(1)
+        logger.warning(
+            "render-on-demand: no /content/<book> in the catalog at %s", kiwix_url
+        )
+    except Exception as e:
+        # Unreachable host, 404 (not kiwix-serve), timeout, undecodable body:
+        # report which, so this is distinguishable from an empty catalog.
+        logger.warning("render-on-demand: catalog at %s unreadable: %s", kiwix_url, e)
+    return ""
+
+
+def _require_kiwix_book(args) -> str:
+    """The /content/<book> id for on-demand renders, or exit saying how to set it.
+
+    Without an id every render requests ``/content//<title>`` and publishes
+    whatever that returns — a 404 body renders and chunks like any other short
+    page — as the article's tiles, cached for every later hit. The id is not
+    optional, so a run that cannot determine one has to stop at startup rather
+    than report a feature that cannot address any content as enabled.
+    """
+    book = args.zim_book or _derive_kiwix_book(args.kiwix_url)
+    if not book:
+        raise SystemExit(
+            f"render-on-demand: no kiwix book id for {args.kiwix_url} — pass "
+            "--zim-book. It is auto-derived from /catalog/v2/entries, which "
+            "only kiwix-serve publishes (see the warning above for why this "
+            "one could not be read)."
+        )
+    return book
 
 
 def _ondemand_chunk_b64(
