@@ -13,6 +13,10 @@ from .config import load_config, make_source
 
 logger = logging.getLogger("pixelrag-index")
 
+# Suffix for an incomplete capture held aside during Stage 1. Deliberately not
+# a ``.png.tiles`` name, so no stage picks a held copy up while it waits.
+_HELD_SUFFIX = ".incomplete"
+
 
 def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
     """True if {idx}.png.tiles must be (re)rendered for doc.
@@ -25,9 +29,10 @@ def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
     document's pixels with another document's metadata. On mismatch the stale
     directory is removed and re-rendered; corrupt manifests (e.g. a crash
     mid-write) are likewise re-rendered instead of poisoning later stages.
-    Explicitly incomplete captures are removed too, including derived chunks
-    that would otherwise make the chunk stage skip regeneration. A missing
-    ``complete`` field is legacy/unknown and does not invalidate the cache.
+    Explicitly incomplete captures are re-rendered too, but held aside rather
+    than deleted (see ``_restore_unrendered``) — they are still the article's
+    only copy until something replaces them. A missing ``complete`` field is
+    legacy/unknown and does not invalidate the cache.
     """
     tile_dir = tiles_dir / f"{idx}.png.tiles"
     manifest_path = tile_dir / "tiles.json"
@@ -44,9 +49,14 @@ def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
         if manifest.get("complete") is not False:
             return False
         logger.warning("  Incomplete capture in %s — re-rendering", tile_dir.name)
-        # Do not render over a partially removed cache: surviving chunks could
-        # make the chunk stage reuse obsolete data. Propagate cleanup failures.
-        shutil.rmtree(tile_dir)
+        # Clear the slot without destroying the capture. The renderer has to
+        # start from an empty directory (surviving tiles or chunks would let a
+        # later stage reuse obsolete data), but a re-render that fails must not
+        # leave the article with nothing — _restore_unrendered puts this copy
+        # back if the slot is still empty after Stage 1. Propagate failures.
+        held = tile_dir.with_name(tile_dir.name + _HELD_SUFFIX)
+        shutil.rmtree(held, ignore_errors=True)  # leftover from an aborted run
+        os.replace(tile_dir, held)
         return True
     elif recorded is not None:
         logger.warning(
@@ -60,6 +70,34 @@ def _needs_render(tiles_dir: Path, idx: int, doc) -> bool:
         )
     shutil.rmtree(tile_dir, ignore_errors=True)
     return True
+
+
+def _restore_unrendered(tiles_dir: Path) -> None:
+    """Put back incomplete captures that a run did not replace.
+
+    _needs_render holds an incomplete capture aside so the renderer starts from
+    an empty slot. The render can then fail without failing the build — a dead
+    site, a wedged Chrome, or an exception the stage logs and steps past — and
+    the article would be left with no capture at all, which is worse than the
+    partial one it had. A slot counts as replaced only once it has a manifest;
+    an empty or half-written directory is discarded in favour of the old copy.
+
+    Runs at the end of Stage 1 over every held copy, not just this run's, so a
+    build that died mid-stage has its copies reinstated by the next one rather
+    than stranded under a name nothing reads.
+    """
+    for held in sorted(tiles_dir.glob(f"*.png.tiles{_HELD_SUFFIX}")):
+        live = held.with_name(held.name[: -len(_HELD_SUFFIX)])
+        if (live / "tiles.json").is_file():
+            shutil.rmtree(held, ignore_errors=True)
+            continue
+        logger.warning(
+            "  Re-render left no capture in %s — restoring the previous "
+            "incomplete one (it is the only copy of this article)",
+            live.name,
+        )
+        shutil.rmtree(live, ignore_errors=True)
+        os.replace(held, live)
 
 
 def _department_of(article: dict, source_root: str) -> str:
@@ -310,6 +348,8 @@ def build(config: dict, limit: int | None = None, force: bool = False) -> Path:
             except Exception as e:
                 logger.warning("  FAILED image %s: %s", doc.id, e)
         logger.info("  Rendered %d local images", len(image_docs))
+
+    _restore_unrendered(tiles_dir)
 
     # Write article_id and the source identity into each tile directory's
     # manifests, so the embed pipeline reads the id explicitly instead of
