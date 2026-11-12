@@ -44,7 +44,7 @@ def test_matching_source_is_reused(tmp_path, completion):
 
 
 @pytest.mark.parametrize("identity_field", ["source", "url"])
-def test_incomplete_matching_capture_is_removed(tmp_path, identity_field):
+def test_incomplete_matching_capture_is_cleared_but_held(tmp_path, identity_field):
     doc = Document(id="a", url="https://example.com/a")
     tile_dir = _make_tile_dir(
         tmp_path,
@@ -53,7 +53,13 @@ def test_incomplete_matching_capture_is_removed(tmp_path, identity_field):
     )
     assert (tile_dir / "tile_0000.png").is_file()
     assert _needs_render(tmp_path, 0, doc) is True
+    # The slot the renderer writes into must be empty...
     assert not tile_dir.exists()
+    # ...but the capture itself is still the only copy of this article, so it
+    # waits under a name no stage scans until the re-render replaces it.
+    held = tmp_path / "0.png.tiles.incomplete"
+    assert (held / "tile_0000.png").is_file()
+    assert not list(tmp_path.glob("*.png.tiles"))
 
 
 def test_legacy_url_field_is_reused(tmp_path):
@@ -65,7 +71,7 @@ def test_legacy_url_field_is_reused(tmp_path):
     assert _needs_render(tmp_path, 0, doc) is False
 
 
-def test_incomplete_capture_cleanup_failure_stops_build(tmp_path, monkeypatch):
+def test_incomplete_capture_hold_failure_stops_build(tmp_path, monkeypatch):
     from pixelrag_index import pipelines
     from pixelrag_render import render
 
@@ -76,14 +82,13 @@ def test_incomplete_capture_cleanup_failure_stops_build(tmp_path, monkeypatch):
         {"source": doc.url, "tiles": ["tile_0000.png"], "complete": False},
     )
 
-    def fail_cleanup(path, ignore_errors=False):
-        assert path == tile_dir
-        if not ignore_errors:
-            raise PermissionError("cache is not writable")
+    def fail_hold(src, dst):
+        assert src == tile_dir
+        raise PermissionError("cache is not writable")
 
     renderer = Mock()
     stages = Mock()
-    monkeypatch.setattr(pipelines.shutil, "rmtree", fail_cleanup)
+    monkeypatch.setattr(pipelines.os, "replace", fail_hold)
     monkeypatch.setattr(pipelines, "make_source", lambda config: iter([doc]))
     monkeypatch.setattr(render, "render_urls", renderer)
     monkeypatch.setattr(pipelines.subprocess, "run", stages)
@@ -184,3 +189,80 @@ def test_build_regenerates_incomplete_capture_and_chunks(tmp_path, monkeypatch):
     pipelines.build(config)
     assert renderer.call_count == 2
     assert chunk_results[-1] is None
+
+
+def test_failed_rerender_keeps_the_previous_incomplete_capture(tmp_path, monkeypatch):
+    """A re-render that produces nothing must not cost the article its capture.
+
+    Stage 1 logs a failed render and moves on, so the article would otherwise
+    end the run with no tiles at all — strictly worse than the partial capture
+    it started with, and invisible in the index that run builds.
+    """
+    from pixelrag_embed.chunk import chunk_article
+    from pixelrag_index import pipelines
+    from pixelrag_render import render
+
+    doc = Document(id="a", url="https://example.com/a")
+    config = {"source": {"type": "web"}, "output": str(tmp_path)}
+    tile_dir = tmp_path / "tiles" / "0.png.tiles"
+    chunk_results = []
+
+    def capture(urls, output_dir, *, stems, **kwargs):
+        if renderer.call_count > 1:
+            # The render failed this run: Chrome got as far as creating the
+            # directory and wrote no manifest. Stage 1 logs and steps past it.
+            (Path(output_dir) / "0.png.tiles").mkdir(parents=True, exist_ok=True)
+            return []
+        _make_tile_dir(
+            Path(output_dir),
+            0,
+            {
+                "url": doc.url,
+                "page_height": 96,
+                "tile_height": 32,
+                "viewport_width": 32,
+                "tiles": ["tile_0000.png"],
+                "complete": False,  # truncated capture — rerun will retry it
+            },
+        )
+        return [tile_dir]
+
+    def run_stage(cmd, *, check):
+        if cmd[2] == "pixelrag_embed.chunk":
+            chunk_results.append(chunk_article(str(tile_dir)))
+
+    renderer = Mock(side_effect=capture)
+    monkeypatch.setattr(render, "render_urls", renderer)
+    monkeypatch.setattr(pipelines, "make_source", lambda config: iter([doc]))
+    monkeypatch.setattr(pipelines.subprocess, "run", run_stage)
+
+    pipelines.build(config)
+    assert (tile_dir / "tile_0000.png").is_file()
+
+    pipelines.build(config)
+    assert renderer.call_count == 2
+    assert (tile_dir / "tile_0000.png").is_file(), "the only capture was deleted"
+    assert json.loads((tile_dir / "tiles.json").read_text())["complete"] is False
+    assert not list((tmp_path / "tiles").glob("*.incomplete"))
+    # Still reaches the index: the kept capture keeps its chunks, so the chunk
+    # stage has nothing to redo and the article is embedded exactly as before.
+    assert (tile_dir / "chunk_0000_00.png").is_file()
+    assert chunk_results[-1] is None
+
+
+def test_held_capture_survives_a_build_that_died_mid_stage(tmp_path):
+    """A build killed between the hold and the restore must not strand it.
+
+    The held name is one no stage scans, so leaving it there would hide the
+    article from every later run as effectively as deleting it.
+    """
+    from pixelrag_index.pipelines import _restore_unrendered
+
+    held = _make_tile_dir(tmp_path, 0, {"source": "/src/a.md", "complete": False})
+    held = held.rename(tmp_path / "0.png.tiles.incomplete")
+    (held / "tile_0000.png").write_bytes(b"x")
+
+    _restore_unrendered(tmp_path)
+
+    assert (tmp_path / "0.png.tiles" / "tile_0000.png").is_file()
+    assert not held.exists()
