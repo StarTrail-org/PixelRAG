@@ -262,8 +262,10 @@ def install_chrome(version: str | None = None, force: bool = False) -> Path:
                 check=True,
                 capture_output=True,
             )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            # Fallback: try python zstandard
+        except (OSError, subprocess.CalledProcessError):
+            # zstd is missing or can't run. Not only FileNotFoundError: a PATH
+            # directory the user can't search turns "not found" into
+            # PermissionError. Fall back to python zstandard.
             try:
                 import zstandard
 
