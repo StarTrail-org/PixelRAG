@@ -15,8 +15,8 @@ from dataclasses import dataclass
 
 from PIL import Image
 
-from .base import article_url, ArticleCapture, TileCapture
-from .connection import launch_websocket, launch_playwright
+from .base import ArticleCapture, TileCapture, article_url
+from .connection import launch_playwright, launch_websocket
 
 TILE_HEIGHT = 8192
 VIEWPORT_WIDTH = 875

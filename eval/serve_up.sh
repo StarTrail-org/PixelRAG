@@ -8,7 +8,7 @@
 #
 # Env:
 #   INDEX_ROOT   where indexes live / get downloaded   [/data/pixelrag/indexes]
-#   HF_INDEX_REPO  HF dataset repo holding the indexes  [StarTrail-org/pixelrag-faiss-indexes]  (TODO: publish)
+#   HF_INDEX_REPO  HF dataset repo holding the indexes  [StarTrail-org/pixelrag-faiss-indexes]
 #   GPU          CUDA device for the serves            [0]
 #   READER_GPU   CUDA device for the reader (H100)     [0]
 # Ports default to the reproduce.sh manifest (override with BASE_PORT/LORA_PORT/TEXT_PORT/NEWS_PORT).

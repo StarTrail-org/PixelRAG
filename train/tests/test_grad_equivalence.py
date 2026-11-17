@@ -20,21 +20,21 @@ Usage:
 
 import copy
 import sys
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from train_contrastors import (
     LogitScale,
-    clip_loss,
-    grad_cache_loss,
-    chunk_inputs,
-    forward_query,
-    forward_doc,
     _clear_rope_deltas,
+    chunk_inputs,
+    clip_loss,
+    forward_doc,
+    forward_query,
+    grad_cache_loss,
 )
 
 
@@ -69,8 +69,8 @@ def chunked_reference_forward_backward(model, q_chunks, d_chunks, logit_scale):
 
 
 def make_fake_inputs(processor, batch_size, device):
-    from PIL import Image
     import numpy as np
+    from PIL import Image
 
     queries = [f"What is topic number {i}?" for i in range(batch_size)]
     images = []
@@ -78,7 +78,7 @@ def make_fake_inputs(processor, batch_size, device):
         arr = np.random.randint(0, 255, (200, 300, 3), dtype=np.uint8)
         images.append(Image.fromarray(arr))
 
-    from train_contrastors import process_queries, process_doc_images
+    from train_contrastors import process_doc_images, process_queries
 
     query_inputs = process_queries(processor, queries)
     doc_inputs = process_doc_images(processor, images)
@@ -234,8 +234,8 @@ def main():
 
     print("Loading model + processor...")
     from models.biqwen3 import BiQwen3
-    from transformers import AutoProcessor
     from peft import LoraConfig, get_peft_model
+    from transformers import AutoProcessor
 
     model_name = "Qwen/Qwen3-VL-Embedding-2B"
     base_model = BiQwen3.from_pretrained(model_name, dtype=torch.bfloat16)

@@ -345,12 +345,14 @@ eval. Budget accordingly when picking `--test-eval-steps`.
 
 ```python
 import json, glob
+
 peak = 0
 for f in sorted(glob.glob("OUTPUT_DIR/eval_step*.jsonl")):
     rows = [json.loads(l) for l in open(f)]
     qa = sum(r.get("correct", False) for r in rows) / len(rows)
     step = int(f.split("eval_step")[1].split(".")[0])
-    peak = max(peak, qa); print(step, round(qa, 4))
+    peak = max(peak, qa)
+    print(step, round(qa, 4))
 print("peak", round(peak, 4))
 ```
 

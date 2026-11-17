@@ -8,7 +8,6 @@ import faiss
 import numpy as np
 import torch
 from PIL import Image
-
 from training.dataset import DOC_INSTRUCTION, QUERY_INSTRUCTION
 from training.model import pool_and_normalize
 

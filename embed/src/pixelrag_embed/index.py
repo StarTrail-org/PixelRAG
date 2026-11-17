@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from functools import partial
 from pathlib import Path
 
@@ -51,6 +52,40 @@ def _load_shards(embeddings_dir: str):
         print("No shard files found!", file=sys.stderr)
         sys.exit(1)
     return shard_files
+
+
+def _dedup_keys(aids, tiles, chunks):
+    """Pack (article_id, tile_index, chunk_index) rows into one int64 key each.
+
+    Each field's radix comes from its observed range, so distinct rows always
+    get distinct keys. Fixed decimal fields (the old article_id * 1e8 +
+    tile * 1e4 + chunk) collided as soon as an index reached 10_000 or went
+    negative. A single int64 array keeps np.unique on its fast path; a
+    structured array is about 4x slower (#140). Raises instead of packing
+    when the combined range does not fit in int64.
+    """
+    if len(aids) == 0:
+        return np.empty(0, dtype=np.int64)
+    fields = (aids, tiles, chunks)
+    lows = [int(f.min()) for f in fields]
+    spans = [int(f.max()) - low + 1 for f, low in zip(fields, lows)]
+    if spans[0] * spans[1] * spans[2] - 1 > np.iinfo(np.int64).max:
+        raise ValueError(
+            "(article_id, tile_index, chunk_index) ranges are too wide to pack "
+            f"into an int64 dedup key: spans {spans}"
+        )
+    # Built in place in one int64 array to keep peak memory low on big builds.
+    # Intermediate steps may wrap, but int64 arithmetic is modular and the
+    # final key is known to fit, so the result is exact.
+    keys = aids.astype(np.int64)
+    keys -= lows[0]
+    keys *= spans[1]
+    keys += tiles
+    keys -= lows[1]
+    keys *= spans[2]
+    keys += chunks
+    keys -= lows[2]
+    return keys
 
 
 def _merge_all_shards(shard_files):
@@ -101,14 +136,9 @@ def _merge_all_shards(shard_files):
     print(f"Concat done: {row:,} vectors in {time.time() - t0:.0f}s")
 
     # Global dedup: numpy-vectorized unique on (article_id, tile, chunk)
-    # Pack into single int64: article_id * 1e8 + tile * 1e4 + chunk
     print("Deduplicating...")
     t1 = time.time()
-    keys = (
-        all_aids[:row] * 100_000_000
-        + all_tiles[:row].astype(np.int64) * 10_000
-        + all_chunks[:row].astype(np.int64)
-    )
+    keys = _dedup_keys(all_aids[:row], all_tiles[:row], all_chunks[:row])
     _, unique_idx = np.unique(keys, return_index=True)
     unique_idx.sort()  # preserve original order
     n_unique = len(unique_idx)
@@ -147,8 +177,10 @@ def build_ivf(
     train_sample: int = 500_000,
     metric: str = "ip",
     gpu_id: int = -1,
+    pq_m: int = 0,
+    pq_nbits: int = 8,
 ):
-    """Build FAISS IVFFlat index.
+    """Build a FAISS IVF index — IVFFlat by default, IVFPQ when pq_m > 0.
 
     Args:
         nlist: number of IVF clusters (default 4096, good for ~30M vectors)
@@ -156,6 +188,10 @@ def build_ivf(
         train_sample: number of vectors to sample for K-means training
         metric: 'ip' (inner product / cosine for L2-normalized vectors) or 'l2'
         gpu_id: GPU to use for training (-1 = CPU only)
+        pq_m: PQ sub-quantizers. 0 keeps the uncompressed IVFFlat index; >0 builds
+            an IVFPQ index that stores pq_m bytes/vector (at nbits=8) instead of
+            dim*4 — ~128x smaller for dim=2048, pq_m=64. Must divide dim evenly.
+        pq_nbits: bits per PQ sub-quantizer (4 or 8), only used when pq_m > 0.
     """
     import faiss
 
@@ -188,13 +224,26 @@ def build_ivf(
     # Build IVF index
     metric_type = faiss.METRIC_INNER_PRODUCT if metric == "ip" else faiss.METRIC_L2
 
+    # Auto-adjust nlist when dataset is smaller than configured nlist
+    if n < nlist:
+        nlist = max(1, n)
+
     # Train on a sample
     actual_train = min(train_sample, n)
     train_indices = np.random.choice(n, actual_train, replace=False)
     train_data = embeddings[train_indices]
 
     quantizer = faiss.IndexFlatIP(dim) if metric == "ip" else faiss.IndexFlatL2(dim)
-    index = faiss.IndexIVFFlat(quantizer, dim, nlist, metric_type)
+    if pq_m > 0:
+        if dim % pq_m != 0:
+            raise ValueError(
+                f"--pq-m ({pq_m}) must divide the embedding dim ({dim}) evenly"
+            )
+        # Pass metric_type explicitly: faiss.IndexIVFPQ defaults to METRIC_L2,
+        # which is wrong for the IP-normalized embeddings this index uses.
+        index = faiss.IndexIVFPQ(quantizer, dim, nlist, pq_m, pq_nbits, metric_type)
+    else:
+        index = faiss.IndexIVFFlat(quantizer, dim, nlist, metric_type)
 
     if gpu_id >= 0:
         # GPU-accelerated training: move CPU index to GPU, train, move back
@@ -243,12 +292,15 @@ def build_ivf(
 
     # Summary
     summary = {
-        "backend": "ivf",
+        "backend": "faiss",
         "total_vectors": n,
         "dimension": dim,
         "nlist": nlist,
         "nprobe": nprobe,
         "metric": metric,
+        "index_type": "ivfpq" if pq_m > 0 else "ivfflat",
+        "pq_m": pq_m,
+        "pq_nbits": pq_nbits if pq_m > 0 else None,
         "index_file": index_path,
         "metadata_file": metadata_path,
     }
@@ -261,6 +313,112 @@ def build_ivf(
         f"\nDone! Index: {index_size / 1e9:.1f} GB, metadata: {os.path.getsize(metadata_path) / 1e9:.1f} GB"
     )
     print(f"Summary: {summary_path}")
+
+
+def build_qdrant(
+    embeddings_dir: str,
+    output_dir: str,
+    url: str | None = None,
+    collection: str = "pixelrag",
+    api_key: str | None = None,
+    client_config: dict | None = None,
+    metric: str = "ip",
+    quantization_config: dict | None = None,
+    append: bool = False,
+    recreate: bool = False,
+    parallel: int = 1,
+    batch: int = 1000,
+):
+    from pydantic import TypeAdapter
+    from qdrant_client import QdrantClient, models
+
+    client_options = dict(client_config or {})
+    if url:
+        client_options["url"] = url
+    if api_key:
+        client_options["api_key"] = api_key
+    if not any(key in client_options for key in ("url", "host", "location", "path")):
+        raise SystemExit(
+            "Qdrant requires --qdrant-url or an endpoint in --qdrant-client-config"
+        )
+
+    client = QdrantClient(**client_options)
+    exists = client.collection_exists(collection)
+    if exists and not (append or recreate):
+        raise ValueError(
+            f"collection {collection!r} already exists. Use --append or --recreate"
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
+    merged = _merge_all_shards(_load_shards(embeddings_dir))
+    vectors = np.ascontiguousarray(merged["embeddings"], dtype=np.float32)
+    dim = merged["dim"]
+
+    distance = models.Distance.COSINE if metric == "ip" else models.Distance.EUCLID
+    quantization = (
+        TypeAdapter(models.QuantizationConfig).validate_python(quantization_config)
+        if quantization_config
+        else None
+    )
+    if recreate or not exists:
+        if exists:
+            client.delete_collection(collection)
+        client.create_collection(
+            collection,
+            vectors_config=models.VectorParams(
+                size=dim, distance=distance, on_disk=True
+            ),
+            quantization_config=quantization,
+        )
+
+    # min_tile_height is the only payload filter used during search.
+    client.create_payload_index(
+        collection, "tile_height", field_schema=models.PayloadSchemaType.INTEGER
+    )
+
+    fields = {
+        "article_id": merged["article_ids"],
+        "tile_index": merged["tile_indices"],
+        "chunk_index": merged["chunk_indices"],
+        "y_offset": merged["y_offsets"],
+        "tile_height": merged["tile_heights"],
+    }
+
+    # Qdrant only allows UUIDs and +ve integers as point IDs.
+    # Ref: https://qdrant.tech/documentation/manage-data/points/#point-ids
+    ids = (
+        str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{article_id}:{tile_index}:{chunk_index}"))
+        for article_id, tile_index, chunk_index in zip(
+            fields["article_id"], fields["tile_index"], fields["chunk_index"]
+        )
+    )
+    payloads = (
+        {name: int(values[i]) for name, values in fields.items()}
+        for i in range(len(vectors))
+    )
+
+    client.upload_collection(
+        collection_name=collection,
+        vectors=vectors,
+        payload=payloads,
+        ids=ids,
+        parallel=parallel,
+        batch_size=batch,
+        wait=True,
+    )
+
+    total = client.count(collection_name=collection, exact=True).count
+    summary = {
+        "backend": "qdrant",
+        "total_vectors": total,
+        "dimension": dim,
+        "metric": metric,
+        "collection": collection,
+    }
+    summary_path = os.path.join(output_dir, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"Uploaded {total:,} points to '{collection}'")
 
 
 def test_search(index_dir: str, nprobe: int = 128, k: int = 10):
@@ -306,11 +464,25 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     # build
-    p_build = sub.add_parser("build", help="Build IVF index (default)")
+    p_build = sub.add_parser("build", help="Build a vector index")
     p_build.add_argument("--embeddings-dir", default="./data/embeddings")
     p_build.add_argument("--output-dir", default="./output/search_index")
     p_build.add_argument(
         "--nlist", type=int, default=4096, help="Number of IVF clusters (default: 4096)"
+    )
+    p_build.add_argument(
+        "--pq-m",
+        type=int,
+        default=0,
+        help="PQ sub-quantizers for IVFPQ compression (0 = uncompressed IVFFlat). "
+        "Must divide the embedding dim evenly; e.g. 64 for dim 2048 → 64 B/vector.",
+    )
+    p_build.add_argument(
+        "--pq-nbits",
+        type=int,
+        default=8,
+        choices=[4, 8],
+        help="Bits per PQ sub-quantizer (default: 8). Only used when --pq-m > 0.",
     )
     p_build.add_argument(
         "--nprobe",
@@ -336,6 +508,38 @@ def main():
         default=-1,
         help="GPU for K-means training (-1 = CPU only)",
     )
+    p_build.add_argument(
+        "--backend",
+        choices=["faiss", "qdrant"],
+        default="faiss",
+        help="Index backend (default: faiss)",
+    )
+    p_build.add_argument(
+        "--qdrant-url", default=None, help="Qdrant server/Cloud URL (qdrant backend)"
+    )
+    p_build.add_argument("--qdrant-api-key", default=os.environ.get("QDRANT_API_KEY"))
+    p_build.add_argument(
+        "--qdrant-client-config",
+        help="Path to a JSON object of QdrantClient constructor arguments",
+    )
+    p_build.add_argument(
+        "--collection", default="pixelrag", help="Qdrant collection name"
+    )
+    p_build.add_argument(
+        "--qdrant-quantization-config",
+        help="Qdrant quantization_config JSON for a new or recreated collection",
+    )
+    qdrant_mode = p_build.add_mutually_exclusive_group()
+    qdrant_mode.add_argument(
+        "--append",
+        action="store_true",
+        help="Upsert into an existing Qdrant collection",
+    )
+    qdrant_mode.add_argument(
+        "--recreate",
+        action="store_true",
+        help="Delete and recreate an existing Qdrant collection",
+    )
 
     # test
     p_test = sub.add_parser("test", help="Test search on built index")
@@ -346,15 +550,39 @@ def main():
     args = parser.parse_args()
 
     if args.command == "build":
-        build_ivf(
-            args.embeddings_dir,
-            args.output_dir,
-            nlist=args.nlist,
-            nprobe=args.nprobe,
-            train_sample=args.train_sample,
-            metric=args.metric,
-            gpu_id=args.gpu_id,
-        )
+        if args.backend == "qdrant":
+            client_config = None
+            if args.qdrant_client_config:
+                with open(args.qdrant_client_config) as f:
+                    client_config = json.load(f)
+            quantization_config = None
+            if args.qdrant_quantization_config:
+                with open(args.qdrant_quantization_config) as f:
+                    quantization_config = json.load(f)
+            build_qdrant(
+                args.embeddings_dir,
+                args.output_dir,
+                url=args.qdrant_url,
+                collection=args.collection,
+                api_key=args.qdrant_api_key,
+                client_config=client_config,
+                metric=args.metric,
+                quantization_config=quantization_config,
+                append=args.append,
+                recreate=args.recreate,
+            )
+        else:
+            build_ivf(
+                args.embeddings_dir,
+                args.output_dir,
+                nlist=args.nlist,
+                nprobe=args.nprobe,
+                train_sample=args.train_sample,
+                metric=args.metric,
+                gpu_id=args.gpu_id,
+                pq_m=args.pq_m,
+                pq_nbits=args.pq_nbits,
+            )
     elif args.command == "test":
         test_search(args.index_dir, nprobe=args.nprobe, k=args.k)
 

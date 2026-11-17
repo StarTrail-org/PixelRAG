@@ -28,7 +28,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 
-from .base import article_url, ArticleCapture, TileCapture
+from .base import ArticleCapture, TileCapture, article_url
 from .connection import CHROME_ARGS, pick_page_ws_url
 
 TILE_HEIGHT = 8192
@@ -77,6 +77,7 @@ async def _launch_oneshot(
     (much faster than the 1 s sleep in launch_websocket).
     """
     import websockets
+
     from .connection import WebsocketConnection
 
     args = [chrome_path, f"--remote-debugging-port={port}"]

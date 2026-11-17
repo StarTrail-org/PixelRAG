@@ -2,7 +2,7 @@
   <img src="docs/assets/banner.png" alt="PixelRAG — Visual Retrieval-Augmented Generation" width="100%">
 </p>
 <p align="center">
-  Official codebase for <b><a href="assets/pixelrag-paper.pdf">PIXELRAG: Web Screenshots Beat Text for
+  Official codebase for <b><a href="https://arxiv.org/abs/2606.28344">PIXELRAG: Web Screenshots Beat Text for
 Retrieval-Augmented Generation</a></b>
 </p>
 <p align="center">
@@ -93,6 +93,18 @@ claude -p "screenshot https://arxiv.org/abs/2404.12387 and explain the key findi
 Or use the slash command in an interactive session: `/screenshot https://example.com`.
 No MCP server, no backend: the skill just calls `pixelshot` (Playwright/CDP) on your machine.
 
+**opencode** users get the same `screenshot` tool via the `@startrail/pixelbrowse` npm package
+— with `pixelshot` on `PATH`, add it to `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@startrail/pixelbrowse"]
+}
+```
+
+See [`plugin/opencode/`](plugin/opencode/) for details.
+
 ## How it works
 
 <p align="center">
@@ -174,8 +186,11 @@ pixelrag serve --index-dir ./my_index --port 30001
 
 No GPU required — runs on macOS (Apple Silicon) or any machine with Python 3.10+.
 
+PDF rendering needs the `pdf` extra and poppler (`brew install poppler`, or
+`apt-get install poppler-utils` on Debian/Ubuntu).
+
 ```bash
-pip install 'pixelrag[index]'
+pip install 'pixelrag[index,pdf]'
 
 # 1. Grab a sample PDF (or use your own)
 curl -L -o paper.pdf https://raw.githubusercontent.com/StarTrail-org/PixelRAG/main/assets/pixelrag-paper.pdf
@@ -208,6 +223,10 @@ curl -X POST http://localhost:30001/search \
 </details>
 
 ### Render a page programmatically
+
+To find pages on the open web before capturing them, try the optional
+[Parallel Search MCP demo](demos/parallel_search/). It saves source URLs and text
+excerpts, then can render selected pages as screenshot tiles without a search API key.
 
 ```python
 from pixelrag_render import render_url
@@ -249,6 +268,95 @@ pixelrag embed --shard-dir ./tiles --output-dir ./embeddings --gpu-ids 0,1
 pixelrag build-index --embeddings-dir ./embeddings --output-dir ./index
 ```
 
+### Qdrant backend
+
+[Qdrant](https://qdrant.tech) is an open-source vector search engine for high-performance and massive scale. [FAISS](https://ai.meta.com/tools/faiss/) remains the default for local indexes. Use Qdrant for configurable quantization, disk-backed vectors, payload filtering, and one collection shared by multiple PixelRAG servers.
+
+Quantization compresses vectors to reduce memory use and speed up search, with a recall tradeoff that depends on the method and settings.
+
+To configure quantization, pass any Qdrant `quantization_config` object in a JSON file.
+See Qdrant's [quantization guide](https://qdrant.tech/documentation/manage-data/quantization/#setting-up-quantization-in-qdrant) for supported methods and parameters.
+
+```json
+{
+  "scalar": {
+    "type": "int8",
+    "quantile": 0.99,
+    "always_ram": true
+  }
+}
+```
+
+```bash
+pip install 'pixelrag[serve,qdrant]'   # or 'pixelrag[index,qdrant]'
+
+# Build against a Qdrant server.
+# Start one locally with: docker run -p 6333:6333 qdrant/qdrant
+pixelrag build-index --embeddings-dir ./embeddings --output-dir ./index \
+    --backend qdrant --qdrant-url http://localhost:6333 --collection pixelrag \
+    --qdrant-quantization-config ./quantization.json
+
+# Add documents to an existing collection.
+pixelrag build-index --embeddings-dir ./more --output-dir ./index \
+    --backend qdrant --qdrant-url http://localhost:6333 --collection pixelrag --append
+
+# Replace an existing collection and its configuration.
+pixelrag build-index --embeddings-dir ./embeddings --output-dir ./index \
+    --backend qdrant --qdrant-url http://localhost:6333 --collection pixelrag --recreate
+
+# Serve the collection. PixelRAG reads the backend from summary.json.
+pixelrag serve --index-dir ./index --qdrant-url http://localhost:6333 \
+    --qdrant-client-config ./qdrant-client.json --port 30001
+```
+
+Configure the orchestrator in `pixelrag.yaml`:
+
+```yaml
+index:
+  backend: qdrant
+  qdrant_url: http://localhost:6333
+  collection: pixelrag
+  client_config: ./qdrant-client.json
+  quantization_config: ./quantization.json
+  # Set append: true or recreate: true when the collection already exists.
+```
+
+### Run the API in Docker
+
+`Dockerfile` builds a two-stage image that installs the `serve` extra and a pinned Chromium,
+and `docker-compose.yml` runs `pixelrag serve` on port 8000 against the index and tiles you
+mount from the host.
+
+**Build an index first.** The container mounts `./data/index` read-only and cannot create one,
+so `docker compose up` against an empty directory exits before the server starts — `pixelrag
+serve` opens the index and `articles.json` during startup. Point `output:` at it in your
+`pixelrag.yaml` (as above), then:
+
+```bash
+mkdir -p data/index data/tiles
+pixelrag index build   # writes index.faiss, metadata.npz and articles.json to ./data/index
+
+docker compose up --build
+# then query it
+curl -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"queries": [{"text": "What is the capital of France?"}], "n_docs": 5}'
+```
+
+Three things to know before using it:
+
+- **Nothing in CI builds this image.** It is best-effort and can drift when dependencies or
+  source paths move, so build it yourself before relying on it.
+- **On Apple Silicon the image builds without a renderer.** The pinned `headless_shell` is
+  published for linux-x64 only, so the build skips it on other architectures: search over a
+  prebuilt index works, on-demand rendering does not. For a renderer-capable image, build for
+  amd64 (emulated, and slower) by adding `platform: linux/amd64` to the `pixelrag-api` service.
+- **The container runs as root, so Chrome renders with its sandbox disabled.** Chrome's
+  sandbox inside a container requires `--cap-add=SYS_ADMIN` or a tailored seccomp profile,
+  and a non-root `USER` without those stops Chrome launching entirely. Container isolation
+  is therefore the only boundary around the renderer — keep the container isolated and do
+  not point it at untrusted pages otherwise.
+
 ### Training
 
 Fine-tuning lives in `train/` — a **separate uv project** (`wiki-screenshot-training`) with its own
@@ -263,6 +371,22 @@ We also release the full training set
 so you can adapt other backbones yourself — a larger Qwen, or any other embedding model.
 The data curation pipeline (LLM-augmented query generation, filtering, hard-negative mining)
 is documented in [`train/docs/synthetic_data_pipeline.md`](train/docs/synthetic_data_pipeline.md).
+
+## Citation
+
+If you find PixelRAG useful, please cite our paper:
+
+```bibtex
+@misc{wang2026pixelragwebscreenshotsbeat,
+      title={PIXELRAG: Web Screenshots Beat Text for Retrieval-Augmented Generation}, 
+      author={Yichuan Wang and Zhifei Li and Zirui Wang and Paul Teiletche and Lesheng Jin and Matei Zaharia and Joseph E. Gonzalez and Sewon Min},
+      year={2026},
+      eprint={2606.28344},
+      archivePrefix={arXiv},
+      primaryClass={cs.IR},
+      url={https://arxiv.org/abs/2606.28344}, 
+}
+```
 
 ## Acknowledgments
 

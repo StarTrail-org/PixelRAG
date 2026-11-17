@@ -18,6 +18,7 @@ import os
 import time
 from dataclasses import dataclass
 
+from ..chrome import sandbox_args
 from .base import ArticleCapture, TileCapture, article_url
 from .connection import WebsocketConnection, pick_page_ws_url
 
@@ -80,7 +81,7 @@ class CDPPipelinedTabsStrategy:
             args = [
                 self.chrome_path,
                 f"--remote-debugging-port={port}",
-                "--no-sandbox",
+                *sandbox_args(),
                 "--disable-dev-shm-usage",
             ]
             if not self.headless_shell:

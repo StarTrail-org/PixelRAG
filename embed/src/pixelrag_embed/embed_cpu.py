@@ -15,9 +15,11 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -79,15 +81,30 @@ def scan_chunks(shard_dir: str) -> list[dict]:
             )
 
         for td in tile_dirs:
-            dir_name = td.name
-            article_id_str = dir_name.replace(".png.tiles", "")
-            try:
-                article_id = int(article_id_str)
-            except ValueError:
-                article_id = hash(article_id_str) % (2**31)
-
             chunks_json = td / "chunks.json"
             tiles_json = td / "tiles.json"
+
+            # Read article_id from the manifest (written by the pipeline).
+            # Fall back to parsing the directory name for backward compat
+            # with indexes built before this change.
+            article_id = None
+            for mf in (chunks_json, tiles_json):
+                if mf.exists() and article_id is None:
+                    try:
+                        article_id = json.loads(mf.read_text()).get("article_id")
+                    except (json.JSONDecodeError, OSError):
+                        pass
+            if article_id is None:
+                article_id_str = td.name.replace(".png.tiles", "")
+                try:
+                    article_id = int(article_id_str)
+                except ValueError:
+                    # Non-numeric dir name with no manifest article_id. Use a
+                    # stable hash (builtin hash() is salted by PYTHONHASHSEED and
+                    # would give a different id every build -> non-reproducible
+                    # index). sha1 keeps the same id for the same dir name.
+                    digest = hashlib.sha1(article_id_str.encode()).hexdigest()
+                    article_id = int(digest[:8], 16)
 
             if chunks_json.exists():
                 with open(chunks_json) as f:
@@ -129,11 +146,18 @@ def embed_items(
     items: list[dict],
     model_name: str,
     device: str = "cpu",
-    instruction: str = "",
+    instruction: str | None = None,
 ) -> np.ndarray:
-    """Embed image items using transformers on the given device."""
+    """Embed image items using transformers on the given device.
+
+    Tiles get the GPU embedder's prompt and pooling, so a tile lands where that
+    path would put it and vectors from both paths can share one index.
+    `instruction` overrides the system prompt; None keeps the GPU embedder's.
+    """
     import torch
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+    from pixelrag_embed.embed import _build_chat_prompt
 
     device = _resolve_device(device)
     dtype = torch.float32 if device == "cpu" else torch.float16
@@ -153,41 +177,37 @@ def embed_items(
     dim = model.config.text_config.hidden_size
     embeddings = np.zeros((len(items), dim), dtype=np.float16)
 
-    prefix = f"Instruct: {instruction}\n" if instruction else ""
+    # Built by the GPU embedder's own helper, so the two paths cannot drift apart.
+    # The processor expands the image placeholder for each tile.
+    prompt = _build_chat_prompt(processor, instruction)
 
     for i, item in enumerate(tqdm(items, desc="Embedding")):
         img = Image.open(item["path"]).convert("RGB")
         img = _clamp_width(img)
 
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": img},
-                    {"type": "text", "text": prefix + "What is shown in this image?"},
-                ],
-            }
-        ]
-
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+        inputs = processor(
+            text=[prompt], images=[img], return_tensors="pt", padding=True
         )
-        inputs = processor(text=[text], images=[img], return_tensors="pt", padding=True)
         if device != "cpu":
             inputs = {
                 k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()
             }
 
         with torch.no_grad():
-            outputs = model(**inputs, output_hidden_states=True)
-            last_hidden = outputs.hidden_states[-1]
+            # Pool the post-norm last_hidden_state, as serve and the GPU path do. The
+            # full model's hidden_states[-1] is taken before the final norm, and its
+            # forward also projects every position onto the vocabulary.
+            last_hidden = model.model(**inputs).last_hidden_state
             seq_lens = inputs["attention_mask"].sum(dim=1)
             last_idx = seq_lens - 1
             pooled = last_hidden[0, last_idx[0]]
             pooled = pooled / pooled.norm()
             embeddings[i] = pooled.cpu().numpy().astype(np.float16)
 
-        if (i + 1) % 10 == 0:
+        # tqdm covers interactive runs but never reaches log files; when
+        # stderr is not a TTY (nohup/CI/redirects) emit a periodic record so
+        # long embeds stay observable after the fact.
+        if (i + 1) % 100 == 0 and not sys.stderr.isatty():
             logger.info("Embedded %d/%d", i + 1, len(items))
 
     return embeddings
@@ -207,7 +227,9 @@ def main():
         help="Device (default: auto-detect)",
     )
     parser.add_argument(
-        "--instruction", default="", help="Instruction prefix for queries"
+        "--instruction",
+        default=None,
+        help="System prompt instruction for embedding (default: the GPU embedder's)",
     )
     parser.add_argument("--limit", type=int, default=None, help="Max chunks to embed")
     args = parser.parse_args()

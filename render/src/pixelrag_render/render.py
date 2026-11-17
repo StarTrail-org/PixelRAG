@@ -33,8 +33,7 @@ def render_url(
     Args:
         url: URL to capture (http:// or https:// or file://).
         output_dir: Directory to write tile subdirectories into.
-        backend: Rendering backend: ``"cdp"`` (default, fastest) or
-                 ``"playwright"`` (full-featured).
+        backend: Rendering backend. Only ``"cdp"`` is implemented.
         tile_height: Maximum tile height in pixels (default 8192).
         quality: JPEG quality 1-100 (default 85).
         viewport_width: Browser viewport width in pixels (default 875).
@@ -73,7 +72,7 @@ def render_urls(
     Args:
         urls: URLs to capture.
         output_dir: Directory to write tile subdirectories into.
-        backend: ``"cdp"`` (default) or ``"playwright"``.
+        backend: Rendering backend. Only ``"cdp"`` is implemented.
         stems: Optional list of output directory stems (one per URL).
                If provided, tiles are written to ``{output_dir}/{stem}.png.tiles/``
                instead of deriving names from URLs. Useful for assigning
@@ -115,6 +114,7 @@ def render_pdf(
     dpi: int = 200,
     pages: Optional[list[int]] = None,
     quality: int = 85,
+    stem: str | None = None,
 ) -> list[Path]:
     """Render a PDF file to tiled JPEG images.
 
@@ -124,13 +124,16 @@ def render_pdf(
         dpi: Rendering resolution (default 200 ≈ 1650×2200 for A4).
         pages: 1-based list of page numbers to render. ``None`` renders all.
         quality: JPEG quality 1-100 (default 85).
+        stem: Override for the tile directory name (default: PDF filename stem).
 
     Returns:
         List containing the tile directory Path on success.
     """
     from .backends.pdf import render_pdf as _render_pdf
 
-    return _render_pdf(path, output_dir, dpi=dpi, pages=pages, quality=quality)
+    return _render_pdf(
+        path, output_dir, dpi=dpi, pages=pages, quality=quality, stem=stem
+    )
 
 
 def render_file(
@@ -194,17 +197,17 @@ def main() -> None:
         # Single URL, default CDP backend
         pixelshot https://example.com --output ./tiles
 
-        # Multiple inputs with 4 workers
-        pixelshot https://a.com https://b.com --output ./tiles --workers 4
+        # Multiple inputs
+        pixelshot https://a.com https://b.com --output ./tiles
 
         # PDF
         pixelshot report.pdf --output ./tiles
 
         # Local HTML
-        pixelshot index.html --output ./tiles --backend playwright
+        pixelshot index.html --output ./tiles
 
-        # Pipe URLs from a file
-        cat urls.txt | xargs pixelshot --output ./tiles --workers 8
+        # URL file
+        pixelshot urls.txt --output ./tiles
 
         # Chrome management (folded from the former `pixelrag-chrome`)
         pixelshot install-chrome   # download the patched headless Chrome
@@ -248,7 +251,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=["cdp", "playwright"],
+        choices=["cdp"],
         default="cdp",
         help="Browser backend for URL/HTML rendering (default: cdp).",
     )
@@ -280,10 +283,12 @@ def main() -> None:
     parser.add_argument(
         "--wait-network-idle",
         action="store_true",
-        help="After the page's load event, also wait until the network is quiet "
-        "(~500ms) before capturing. Helps JS/SPA pages that fetch content after "
-        "load; adds a quiet window per page, so off by default. Recommended for "
-        "single-page renders (e.g. the pixelbrowse skill).",
+        help="After the page's load event, also wait until at most 2 network "
+        "requests have been in flight for ~500ms (networkidle2) before "
+        "capturing, capped at 12s. Helps JS/SPA pages that fetch content "
+        "after load; tolerates persistent analytics/long-poll connections. "
+        "Off by default; the index pipeline's `web` source and the "
+        "pixelbrowse skill enable it.",
     )
     parser.add_argument(
         "--dpi",
@@ -301,22 +306,36 @@ def main() -> None:
         "session (cookies/logins) — so authenticated pages work — then closes only "
         "that tab. Needs no local Chrome binary. Env: PIXELSHOT_CDP_URL.",
     )
+    parser.add_argument(
+        "--extract-text",
+        action="store_true",
+        help="Extract page text alongside tiles (hybrid output). Saves a text.md "
+        "file in each tile directory with the page's innerText. Useful for "
+        "reducing LLM token usage on text-heavy pages.",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
 
-    # Partition inputs into URLs and files for batch processing
     urls = []
     files = []
     for inp in args.inputs:
-        if inp.startswith("http://") or inp.startswith("https://"):
+        if inp.lower().endswith(".txt"):
+            try:
+                with open(inp, encoding="utf-8") as f:
+                    for line in f:
+                        url = line.strip()
+                        if url:
+                            urls.append(url)
+            except FileNotFoundError:
+                parser.error(f"URL file not found: {inp}")
+        elif inp.startswith("http://") or inp.startswith("https://"):
             urls.append(inp)
         else:
             files.append(Path(inp))
 
     results: list[Path] = []
 
-    # Batch-render URLs together for efficiency
     if urls:
         logger.info(
             "Rendering %d URL(s) with backend=%s workers=%d",
@@ -333,6 +352,7 @@ def main() -> None:
             viewport_width=args.viewport_width,
             workers=args.workers,
             wait_network_idle=args.wait_network_idle,
+            extract_text=args.extract_text,
             cdp_url=args.cdp_url,
         )
         results.extend(tile_dirs)
@@ -356,6 +376,7 @@ def main() -> None:
                     viewport_width=args.viewport_width,
                     workers=1,
                     wait_network_idle=args.wait_network_idle,
+                    extract_text=args.extract_text,
                     cdp_url=args.cdp_url,
                 )
             elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:

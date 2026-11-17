@@ -31,6 +31,40 @@ jobs:
       - name: Check formatting with ruff
         run: uvx ruff format --check .
 
+  demo-tests:
+    name: Demo tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Each demo is its own uv project depending on the repo root via a path
+      # source, so `pytest tests/` never reached them. Run every demo that has
+      # tests, in its own environment.
+      - name: Run demo test suites
+        run: |
+          set -euo pipefail
+          shopt -s nullglob  # no demos/ projects must not iterate the literal glob
+          found=0
+          for proj in demos/*/pyproject.toml; do
+            dir="$(dirname "$proj")"
+            if ! compgen -G "$dir/test_*.py" > /dev/null && ! [ -d "$dir/tests" ]; then
+              echo "::notice::$dir has no tests, skipping"
+              continue
+            fi
+            echo "--- $dir ---"
+            uv run --project "$dir" --group dev pytest "$dir" -q
+            found=$((found + 1))
+          done
+          echo "ran $found demo test suite(s)"
+
   frontend-build:
     name: Frontend build
     runs-on: ubuntu-latest
@@ -48,6 +82,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build
@@ -82,6 +119,14 @@ jobs:
         run: uv run pixelshot install-chrome
 
       - name: Run tests
+        env:
+          # Chrome's sandbox cannot initialise on the hosted runner (no user
+          # namespaces, no SUID helper), so every render test fails to launch
+          # Chrome at all: "Failed to connect to Chrome on port 12000".
+          # Opt out here rather than weakening sandbox_args(): the runner is a
+          # disposable VM rendering known fixtures, while real users -- who
+          # point this at pages they do not control -- keep the sandbox on.
+          PIXELSHOT_NO_SANDBOX: "1"
         run: uv run pytest tests/ -v
 
   plugin-validate:

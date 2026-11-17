@@ -28,7 +28,6 @@ from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
-
 DEFAULT_INPUT_GLOB = (
     "training/data/lite-query-v2-full-filtered-hn-v2-chunks/chunk_*/filtered_hn.jsonl"
 )
@@ -405,8 +404,11 @@ def score_batch(
 ) -> list[dict]:
     prompt = build_prompt(references, batch)
     parsed = call_gemini_json(client_ctx, args.model, prompt, args.max_retries)
+    # TRY004 asks for TypeError here. This validates a model's response
+    # payload rather than a caller's argument, so ValueError is the right
+    # contract and callers already catch it.
     if not isinstance(parsed, list):
-        raise ValueError("Gemini response is not a JSON array")
+        raise ValueError("Gemini response is not a JSON array")  # noqa: TRY004
 
     by_id = {}
     for item in parsed:

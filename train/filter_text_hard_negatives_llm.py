@@ -25,16 +25,15 @@ example is skipped.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import json
 import os
 import sys
 import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import requests
-
 
 CHAT_COMPLETIONS_URL = "https://us.api.openai.com/v1/chat/completions"
 MODEL_PRICING = {

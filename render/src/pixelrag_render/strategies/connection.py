@@ -9,8 +9,10 @@ import signal
 import subprocess
 import urllib.request
 
+from ..chrome import sandbox_args
+
 CHROME_ARGS = [
-    "--no-sandbox",
+    *sandbox_args(),
     "--disable-dev-shm-usage",
     "--enable-gpu-rasterization",
     "--force-gpu-rasterization",

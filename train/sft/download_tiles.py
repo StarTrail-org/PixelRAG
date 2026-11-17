@@ -34,15 +34,15 @@ def shard_suffix(p: str) -> str:
     return p
 
 
-def collect_paths(retrieval_dir: Path, splits: list[str]) -> set[str]:
+def collect_paths(retrieval_dir: Path, splits: list[str]) -> dict[str, str | None]:
     """Collect every unique absolute path across hit lists + gold suffixes.
 
     Gold paths use the dataset-relative form ('images/shard_.../chunk.png');
     hits are absolute '/opt/dlami/nvme/kiwix_tiles/shard_.../chunk.png'.
     We normalize everything to shard-suffix for dedup across sources.
-    Returns set of (shard_suffix_key, preferred_abs_path_for_fetch).
+    Returns dict mapping shard_suffix_key to preferred_abs_path_for_fetch.
     """
-    by_suffix = {}
+    by_suffix: dict[str, str | None] = {}
     for split in splits:
         p = retrieval_dir / f"{split}.jsonl"
         if not p.exists():
@@ -111,7 +111,7 @@ def fetch_tile(
     return False, f"{last_err}"
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--retrieval-dir",
@@ -151,7 +151,7 @@ def main():
     print(f"  Unique tile suffixes: {len(by_suffix):,}")
 
     # Split into linkable-from-local vs must-fetch
-    need_fetch = []  # (suffix, abs_path_for_api)
+    need_fetch: list[tuple[str, str]] = []
     linked = 0
     already = 0
     for suffix, abs_fetch in by_suffix.items():
@@ -183,7 +183,7 @@ def main():
     fail_paths = []
     with open(failed_log, "w") as f_fail:
 
-        def _work(item):
+        def _work(item: tuple[str, str]) -> tuple[str, str, bool, str]:
             suffix, abs_path = item
             dst = mirror / suffix
             success, err = fetch_tile(args.api_url, abs_path, dst)

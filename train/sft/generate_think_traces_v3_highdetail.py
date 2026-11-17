@@ -35,8 +35,9 @@ def encode_image(path: str, max_bytes: int = 4_000_000) -> str | None:
             data = f.read()
         if len(data) > max_bytes:
             # For large images, re-encode smaller via PIL to stay under limit
-            from PIL import Image
             import io
+
+            from PIL import Image
 
             Image.MAX_IMAGE_PIXELS = 300_000_000
             img = Image.open(path)
@@ -58,7 +59,9 @@ def encode_image(path: str, max_bytes: int = 4_000_000) -> str | None:
         return None
 
 
-def process_one(client, model, ex, image_root):
+def process_one(
+    client: OpenAI, model: str, ex: dict[str, str], image_root: str
+) -> dict[str, str | None]:
     img_path = os.path.join(image_root, ex["chunk_path"])
     img_url = encode_image(img_path) if os.path.exists(img_path) else None
     if img_url is None:
@@ -92,7 +95,7 @@ def process_one(client, model, ex, image_root):
         return {**ex, "reasoning": None, "_error": str(e)[:200]}
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)

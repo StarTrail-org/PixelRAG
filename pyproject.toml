@@ -1,6 +1,6 @@
 [project]
 name = "pixelrag"
-version = "0.3.0"
+version = "0.4.0"
 description = "Visual Retrieval-Augmented Generation — render, embed, index, search"
 requires-python = ">=3.12"
 authors = [{ name = "Zhifei Li", email = "andylizf@outlook.com" }]
@@ -14,13 +14,19 @@ classifiers = [
 ]
 # Core stays light — rendering / screenshots only (no torch). The `pixelshot` command and
 # the `pixelrag` umbrella work on this alone. Heavy ML stages are opt-in extras below.
+# Every entry here is imported by the shipped packages; four that were not (cef-capi-py,
+# pymupdf, pyturbojpeg, anthropic) were removed — see #197. PDF rendering uses pdf2image
+# from the `pdf` extra, not pymupdf.
 dependencies = [
     "pillow>=10.0.0",
     "websockets>=12.0",
-    "pymupdf>=1.27.2.3",
-    "pyturbojpeg>=2.2.0",
-    "cef-capi-py>=131.3.5",
-    "anthropic>=0.102.0",
+    # Light, pure-Python utilities the umbrella CLI and the non-torch stage code
+    # (chunk / config parsing / progress bars) import at module load. Kept in core
+    # — not the heavy `embed`/`index` extras — so `pixelrag chunk`, `pixelrag index`,
+    # and the torch-free test suite import cleanly without pulling torch/faiss.
+    "numpy>=1.26.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.60.0",
 ]
 
 [project.optional-dependencies]
@@ -29,37 +35,43 @@ embed = [
     "torchvision>=0.24.0",
     "transformers>=4.57.0",
     "faiss-cpu>=1.9.0",
-    "numpy>=1.26.0",
-    "tqdm>=4.60.0",
 ]
 serve = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
-    "numpy>=1.26.0",
     "faiss-cpu>=1.9.0",
     "transformers>=4.57.0",
     "torch>=2.9.0",
+    "torchvision>=0.24.0",  # transformers' Qwen3-VL processor needs it; cu129 via tool.uv.sources
     "qwen-vl-utils",
     "pydantic>=2.0.0",
 ]
-index = ["pixelrag[embed]", "pyyaml>=6.0"]
-all = ["pixelrag[embed,serve,index]"]
+index = ["pixelrag[embed]", "markdown>=3.4"]
+qdrant = ["qdrant-client>=1.18.0"]
+all = ["pixelrag[embed,serve,index,qdrant]"]
 gpu = ["faiss-gpu-cu12>=1.13.2; sys_platform == 'linux'"]
 playwright = ["playwright>=1.40.0"]
 pdf = ["pdf2image>=1.16.0"]
-kiwix = ["libzim>=3.6.0"]
-distributed = ["boto3>=1.42.0"]
-eval = [
-    "pandas>=2.0",
-    "Pillow>=10.0",
-    "tqdm>=4.60",
-    "trafilatura>=1.6",
-    "openai>=1.0",
-    "aiohttp>=3.9",
-    "datasets>=2.14",
-    "huggingface-hub>=0.20",
+# zim_server_async.py imports both of these at module scope; aiohttp was only
+# declared in the (now removed) root `eval` extra, so `pip install pixelrag[kiwix]`
+# could not run it.
+kiwix = ["libzim>=3.6.0", "aiohttp>=3.9"]
+# distributed.py imports botocore.exceptions directly; boto3 happens to pull it in,
+# but a direct import belongs in the declaration.
+distributed = ["boto3>=1.42.0", "botocore>=1.31.0"]
+# Everything tests/ needs, torch-free. The serve-side deps are listed one by one
+# rather than as `pixelrag[serve]` on purpose: that extra pulls torch,
+# torchvision and transformers, which the tests never touch — api.py imports them
+# lazily, inside the functions that encode queries. Keeping them out is what lets
+# CI run the serve and backend suites at all (see the note on core `numpy`).
+dev = [
+    "faiss-cpu>=1.9.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27",  # fastapi's TestClient
+    "pixelrag[qdrant]",
+    "pydantic>=2.0.0",
+    "pytest>=8.0",
 ]
-dev = ["pytest>=8.0"]
 
 [project.scripts]
 pixelshot = "pixelrag_render.render:main"
@@ -102,6 +114,7 @@ environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
+pixelrag = { workspace = true }
 
 [[tool.uv.index]]
 name = "pytorch-cu129"
@@ -109,12 +122,47 @@ url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
 [tool.ruff]
-exclude = ["tmp"]
+exclude = ["tmp", "docs", "skill"]
 
 [tool.ruff.lint]
 ignore = [
-    "E402",  # module-level import not at top — common in ML codebases
-    "E741",  # ambiguous variable name (l, O, I)
+    "E402",      # module-level import not at top — common in ML codebases
+    "E741",      # ambiguous variable name (l, O, I)
+    "BLE001",    # blind exception catch — pervasive in data pipelines
+    "EXE001",    # shebang without +x
+    "S110",      # try-except-pass
+    "S112",      # try-except-continue
+    "SIM102",    # collapsible if
+    "SIM103",    # return bool directly
+    "SIM113",    # enumerate instead of manual counter
+    "SIM115",    # use context manager for open
+    "SIM117",    # combine with-statements
+    "ASYNC210",  # blocking call in async
+    "ASYNC220",  # blocking call in async
+    "ASYNC230",  # blocking call in async
+    "UP006",     # deprecated typing aliases
+    "UP017",     # deprecated datetime aliases
+    "UP035",     # deprecated typing imports
+    "UP041",     # timeout-error alias
+    "UP045",     # X | None instead of Optional
+    "PLW1509",   # subprocess preexec_fn
+    "PLW1510",   # subprocess without check
+    "PLR0402",   # import-as-module-alias
+    "PLR1730",   # if-stmt-min-max
+    "RUF012",    # mutable-class-default
+    "RUF013",    # implicit-optional
+    "RUF022",    # unsorted-all
+    "RUF059",    # unused-unpacked-variable
+    "TRY002",    # raise-vanilla-class
+    "PIE790",    # unnecessary-placeholder
+    "PIE810",    # multiple-starts-ends-with
+    "PYI034",    # non-self-return-type
+    "PERF102",   # incorrect-dict-iterator
+    "PERF101",   # unnecessary-cast-to-int
+    "DTZ005",    # call-datetime-now-without-tzinfo
+    "C401",      # unnecessary-generator-set
+    "C408",      # unnecessary-collection-call
+    "FURB188",   # slice-to-remove-prefix-or-suffix
 ]
 
 [tool.pyright]
