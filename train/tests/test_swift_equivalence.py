@@ -100,8 +100,8 @@ def test_tokenization():
     # Also check the actual template strings
     if contrastors_text != swift_text:
         print("  DIFF in template text!")
-        print(f"    Contrastors: {repr(contrastors_text[:200])}")
-        print(f"    Swift:       {repr(swift_text[:200])}")
+        print(f"    Contrastors: {contrastors_text[:200]!r}")
+        print(f"    Swift:       {swift_text[:200]!r}")
 
     assert match, "Tokenization mismatch!"
     print("  PASSED ✓")
@@ -260,8 +260,8 @@ def test_loss():
     doc_embs = doc_embs / doc_embs.norm(dim=-1, keepdim=True)
 
     # --- Contrastors path: clip_loss ---
-    from train_contrastors import LogitScale
     import torch.nn.functional as F
+    from train_contrastors import LogitScale
 
     logit_scale = LogitScale(init_value=1.0 / temperature)
     similarity = logit_scale(torch.matmul(query_embs, doc_embs.T))
@@ -478,8 +478,8 @@ def test_data_pipeline():
     # --- Contrastors collate path ---
     from train_contrastors import (
         init_chat_templates,
-        process_queries,
         process_doc_images,
+        process_queries,
     )
 
     init_chat_templates(processor)
@@ -598,17 +598,17 @@ def test_training_step():
     """
     print("\n=== Test 7: Training step loss equivalence ===")
 
-    from PIL import Image
-    from transformers import AutoProcessor
     from models.biqwen3 import BiQwen3
+    from PIL import Image
     from train_contrastors import (
-        init_chat_templates,
-        process_queries,
-        process_doc_images,
         LogitScale,
-        clip_loss,
         _clear_rope_deltas,
+        clip_loss,
+        init_chat_templates,
+        process_doc_images,
+        process_queries,
     )
+    from transformers import AutoProcessor
 
     temperature = 0.07
     num_hard_neg = 2

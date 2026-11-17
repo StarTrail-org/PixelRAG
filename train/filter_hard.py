@@ -150,7 +150,7 @@ async def main():
         r"\d{4}.*\b(award|prize|medal|trophy)\b|"
         r"\b(episode|season)\s+\d.*\b(air|viewer|rating|guest)\b|"
         r"\bhow many (goals|points|runs|votes|fouls|wickets|spectators|viewers)\b",
-        re.I,
+        re.IGNORECASE,
     )
     PASSAGE_SIGNAL = re.compile(
         r"\b(nickname|called|referred to|according to|why did|why was|"
@@ -159,7 +159,7 @@ async def main():
         r"what was the (reason|cause|result|outcome|consequence)|"
         r"after the (battle|war|incident|death|resignation|defeat)|"
         r"during the (meeting|ceremony|trial|debate))\b",
-        re.I,
+        re.IGNORECASE,
     )
 
     to_classify_idx = []

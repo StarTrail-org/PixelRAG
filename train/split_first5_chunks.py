@@ -8,7 +8,6 @@ import json
 import random
 from pathlib import Path
 
-
 DEFAULT_CHUNK_INPUTS = [
     Path(
         "/home/user/wiki-screenshot-training/training/data/lite-query-v2-full-filtered-hn-v2-chunks/chunk_000000_009999/filtered_hn.jsonl"

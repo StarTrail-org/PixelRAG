@@ -10,7 +10,6 @@ from typing import ClassVar, Literal
 import torch
 from transformers.models.qwen3_vl import Qwen3VLConfig, Qwen3VLModel
 
-
 # Weight key mappings: Qwen3-VL-Embedding checkpoints store weights under
 # "model." prefix (from Qwen3VLForConditionalGeneration), but Qwen3VLModel
 # expects them without that prefix.
@@ -61,8 +60,9 @@ class BiQwen3(Qwen3VLModel):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
         # For transformers <5.0: handle key remapping manually
-        from transformers import PreTrainedModel
         import inspect
+
+        from transformers import PreTrainedModel
 
         sig = inspect.signature(PreTrainedModel.from_pretrained)
         if "key_mapping" in sig.parameters:
@@ -80,11 +80,12 @@ class BiQwen3(Qwen3VLModel):
             )
 
         # transformers <5.0: load with remapped state_dict
-        from transformers import AutoConfig
-        from safetensors.torch import load_file
-        from pathlib import Path
-        from huggingface_hub import snapshot_download
         import glob
+        from pathlib import Path
+
+        from huggingface_hub import snapshot_download
+        from safetensors.torch import load_file
+        from transformers import AutoConfig
 
         kwargs.get("dtype", kwargs.get("torch_dtype", None))
 

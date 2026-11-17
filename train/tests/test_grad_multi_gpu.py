@@ -15,24 +15,24 @@ Requires 2 GPUs with ~10GB free each.
 import copy
 import os
 import sys
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 import torch.distributed.nn
 import torch.nn.functional as F
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from train_contrastors import (
     LogitScale,
-    clip_loss,
-    grad_cache_loss,
-    gather_with_grad,
-    chunk_inputs,
-    forward_query,
-    forward_doc,
     _clear_rope_deltas,
+    chunk_inputs,
+    clip_loss,
+    forward_doc,
+    forward_query,
+    gather_with_grad,
+    grad_cache_loss,
 )
 
 
@@ -77,8 +77,8 @@ def multi_gpu_reference(model, q_chunks, d_chunks, logit_scale):
 
 def make_rank_data(processor, batch_size, device, rank):
     """Create per-rank fake data (different data on each rank)."""
-    from PIL import Image
     import numpy as np
+    from PIL import Image
 
     # Different seed per rank → different data
     rng = np.random.RandomState(1000 + rank)
@@ -88,7 +88,7 @@ def make_rank_data(processor, batch_size, device, rank):
         arr = rng.randint(0, 255, (200, 300, 3), dtype=np.uint8)
         images.append(Image.fromarray(arr))
 
-    from train_contrastors import process_queries, process_doc_images
+    from train_contrastors import process_doc_images, process_queries
 
     query_inputs = process_queries(processor, queries)
     doc_inputs = process_doc_images(processor, images)
@@ -149,8 +149,8 @@ def main():
 
     # Load model
     from models.biqwen3 import BiQwen3
-    from transformers import AutoProcessor
     from peft import LoraConfig, get_peft_model
+    from transformers import AutoProcessor
 
     model_name = "Qwen/Qwen3-VL-Embedding-2B"
     base_model = BiQwen3.from_pretrained(model_name, dtype=torch.bfloat16)

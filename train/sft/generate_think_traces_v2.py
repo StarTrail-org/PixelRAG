@@ -35,8 +35,9 @@ def encode_image(path: str, max_bytes: int = 4_000_000) -> str | None:
             data = f.read()
         if len(data) > max_bytes:
             # For large images, re-encode smaller via PIL to stay under limit
-            from PIL import Image
             import io
+
+            from PIL import Image
 
             Image.MAX_IMAGE_PIXELS = 300_000_000
             img = Image.open(path)

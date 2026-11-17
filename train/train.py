@@ -11,6 +11,7 @@ Resume from checkpoint:
 import argparse
 import logging
 import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -19,16 +20,13 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
+from training.dataset import QueryChunkDataset, make_collate_fn
+from training.evaluate import run_eval
+from training.model import load_model_for_training, load_processor, pool_and_normalize
 from transformers import (
     get_constant_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
 )
-
-from training.dataset import QueryChunkDataset, make_collate_fn
-from training.evaluate import run_eval
-from training.model import load_model_for_training, load_processor, pool_and_normalize
-
-import sys
 
 LOG_PATH = Path("training/train.log")
 
