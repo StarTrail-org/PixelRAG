@@ -56,7 +56,9 @@ KEEP_FILES = {
 }
 
 
-def build_readme(comp, step, judge, config, base_judge):
+def build_readme(
+    comp: str, step: int, judge: float, config: str, base_judge: float
+) -> str:
     return f"""---
 license: apache-2.0
 library_name: peft
@@ -128,7 +130,7 @@ messages = [{{"role": "user", "content": [
 """
 
 
-def push_one(comp, run_dir, step, judge, config):
+def push_one(comp: str, run_dir: str, step: int, judge: float, config: str) -> None:
     src = Path(BASE_CKPT_DIR) / run_dir / f"checkpoint-{step}"
     assert src.exists(), f"missing {src}"
 
@@ -166,7 +168,7 @@ def push_one(comp, run_dir, step, judge, config):
         print(f"  uploaded → https://huggingface.co/{repo_id}")
 
 
-def main():
+def main() -> None:
     for args in BEST:
         push_one(*args)
     print("\nAll done.")

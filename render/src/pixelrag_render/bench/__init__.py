@@ -10,7 +10,13 @@ Usage:
 
 from .bench_throughput import (
     Bench as Bench,
-    prepare_articles as prepare_articles,
+)
+from .bench_throughput import (
     generate_ground_truth as generate_ground_truth,
+)
+from .bench_throughput import (
+    prepare_articles as prepare_articles,
+)
+from .bench_throughput import (
     run_and_verify as run_and_verify,
 )

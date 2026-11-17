@@ -20,6 +20,7 @@ def render_pdf(
     dpi: int = 200,
     pages: Optional[list[int]] = None,
     quality: int = 85,
+    stem: str | None = None,
 ) -> list[Path]:
     """Render a PDF to JPEG tiles.
 
@@ -31,7 +32,11 @@ def render_pdf(
         output_dir: Directory to write the tile subdirectory into.
         dpi: Resolution for rendering (default 200 gives ~1650×2200px for A4).
         pages: 1-based list of page numbers to render. ``None`` renders all pages.
+            Tile filenames and indices retain their zero-based source page index.
         quality: JPEG quality 1-100 (default 85).
+        stem: Override for the tile directory name. Defaults to the PDF filename
+            stem. The pipeline passes the article_id here so directory names
+            are always numeric and consistent with articles.json.
 
     Returns:
         List containing the single tile directory Path on success.
@@ -55,7 +60,8 @@ def render_pdf(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = path.stem
+    if stem is None:
+        stem = path.stem
     tile_dir = output_dir / f"{stem}.png.tiles"
     tile_dir.mkdir(parents=True, exist_ok=True)
 
@@ -77,10 +83,11 @@ def render_pdf(
 
     saved_tiles: list[str] = []
     chunks_info: list[dict] = []
-    for idx, img in enumerate(images):
+    first_index = convert_kwargs.get("first_page", 1) - 1
+    for idx, img in enumerate(images, start=first_index):
         # If caller provided a sparse page list, skip pages not in the list
         if pages is not None:
-            page_num = min(pages) + idx
+            page_num = idx + 1
             if page_num not in pages:
                 continue
 
@@ -108,7 +115,15 @@ def render_pdf(
         "dpi": dpi,
         "total_pages": len(saved_tiles),
         "tiles": saved_tiles,
-        "complete": True,
+        # The selection the render ran with, recorded for the same reason the
+        # URL manifests record their tile height: so a consumer reading
+        # tiles.json can see what was asked for rather than be told out of band.
+        "requested_pages": sorted(pages) if pages is not None else None,
+        # A page selection means these tiles are some of the document rather
+        # than all of it, and nothing here has checked the selection against
+        # the document's length. Only a whole-document render may claim to be
+        # complete — see #139 on what an unconditional flag costs downstream.
+        "complete": pages is None,
     }
     with open(tile_dir / "tiles.json", "w") as f:
         json.dump(manifest, f)

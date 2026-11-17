@@ -141,6 +141,14 @@ sub-frames). None achieved 100% correct at 48 workers.
 
 ## Reproducing
 
+**Measure with the bench harness, not a hand-rolled loop.** `tiles_per_s` here is
+**capture-only**: the bench's timer starts *after* `strategy.setup()` brings the Chrome
+workers up. At 48 workers, that startup is ~49s of serial Chrome launches — it is setup
+cost, not throughput, so it must not be counted. A naive end-to-end loop that includes the
+48-worker startup reports ~13 t/s (the startup tax), which is not the capture rate.
+Re-measured on the reference box (EPYC 7763, 128c) with the harness below: **130 t/s
+capture-only** (200 maxi-ZIM pages, 48 workers, `fmt="raw"`).
+
 ```python
 from pixelrag_render.strategies.cdp_phased import CDPPhasedStrategy
 from pixelrag_render.bench import Bench

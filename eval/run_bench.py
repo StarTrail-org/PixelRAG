@@ -14,6 +14,9 @@ Usage:
 
     # OpenRouter API (no local vLLM)
     python run_bench.py --task simpleqa --model openai/gpt-4 --open-router --api-key sk-or-v1-xxx
+
+    # OrcaRouter API (no local vLLM)
+    python run_bench.py --task simpleqa --model anthropic/claude-opus-4-8 --orcarouter
 """
 
 import argparse
@@ -38,39 +41,48 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from lib import (
+    LLMClient,
+    build_messages,
+    build_react_messages,
+    encode_screenshot,
+    extract_url_from_metadata,
+    load_arc_data,
+    load_commonsenseqa_data,
+    load_hellaswag_data,
+    load_nq_data,
+    load_nq_tables_data,
+    load_openbookqa_data,
+    load_piqa_data,
     # Data
     load_simpleqa_wikipedia,
-    extract_url_from_metadata,
-    encode_screenshot,
-    make_compressed_encoder,
-    load_nq_data,
     load_triviaqa_data,
-    load_nq_tables_data,
-    load_piqa_data,
-    load_hellaswag_data,
-    load_commonsenseqa_data,
-    load_openbookqa_data,
-    load_arc_data,
+    make_compressed_encoder,
 )
-from lib import LLMClient, build_messages, build_react_messages
-from lib.model_config import get_model_config, get_output_filename
-from lib.retrieval import (
-    _get_query_image_path_for_example,
-    _save_worldvqa_query_image,
-    _save_task_query_image,
+from lib.benchmarks import (
+    SUPPORTED_TASKS as DATASET_REPOS,
 )
 from lib.benchmarks import (
     load_encyclopedic_vqa_data,
-    load_shortformqa_data,
-    load_worldvqa_data,
-    load_simplevqa_data,
     load_factualvqa_data,
     load_mmsearch_data,
-    load_webqa_data,
     load_multimodalqa_data,
-    SUPPORTED_TASKS as DATASET_REPOS,
+    load_shortformqa_data,
+    load_simplevqa_data,
+    load_webqa_data,
+    load_worldvqa_data,
 )
-
+from lib.model_config import (
+    ORCAROUTER_API_BASE,
+    get_atlascloud_config,
+    get_cheaperinference_config,
+    get_model_config,
+    get_output_filename,
+)
+from lib.retrieval import (
+    _get_query_image_path_for_example,
+    _save_task_query_image,
+    _save_worldvqa_query_image,
+)
 
 _DEFAULT_SPLIT_FOR_TASK = {
     "simpleqa": "test",
@@ -106,13 +118,12 @@ def _fetch_status(api_url: str | None, timeout: float = 5.0) -> dict | None:
     import urllib.request
 
     base = api_url.rstrip("/")
-    if base.endswith("/search"):
-        base = base[: -len("/search")]
+    base = base.removesuffix("/search")
     status_url = base + "/status"
     try:
         with urllib.request.urlopen(status_url, timeout=timeout) as r:
             return json.loads(r.read().decode())
-    except Exception as e:  # noqa: BLE001 — best-effort capture
+    except Exception as e:
         return {"_error": f"{type(e).__name__}: {e}", "url": status_url}
 
 
@@ -168,7 +179,7 @@ def _build_run_metadata(args, n_loaded: int) -> dict:
             .decode()
             .strip()
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         meta["git_commit"] = None
     return meta
 
@@ -315,7 +326,7 @@ async def process_example(
                 "dataset_name": task_name,
                 "retrieval_type": retrieval_result.retrieval_type,
                 "has_retrieval_content": retrieval_result.has_content,
-                "usage": usage,
+                "usage": _token_usage(usage),
                 "success": True,
                 "timing": {
                     "retrieval_time": retrieval_time,
@@ -500,6 +511,11 @@ def _hits_to_retrieval_result(hits: list[dict]) -> "RetrievalResult":  # noqa: F
     )
 
 
+def _token_usage(usage: dict) -> dict:
+    """Token counts only: drop private keys carried alongside them."""
+    return {k: v for k, v in usage.items() if not k.startswith("_")}
+
+
 async def process_example_react(
     llm_client: LLMClient,
     retriever,
@@ -573,7 +589,9 @@ async def process_example_react(
                 # Extract search query and do another round
                 search_query = match.group(1).strip()
                 all_search_queries.append(search_query)
-                assistant_responses.append(generated_text)
+                assistant_responses.append(
+                    usage.get("_assistant_message", generated_text)
+                )
                 logger.info(
                     f"ReAct [{example_id}] turn {turn + 1}: searching '{search_query[:80]}'"
                 )
@@ -611,7 +629,12 @@ async def process_example_react(
                     ],
                 }
                 if turn_idx < len(assistant_responses):
-                    turn_info["assistant_response"] = assistant_responses[turn_idx]
+                    response = assistant_responses[turn_idx]
+                    turn_info["assistant_response"] = (
+                        response.get("content", "")
+                        if isinstance(response, dict)
+                        else response
+                    )
                 elif turn_idx == len(retrieval_results) - 1:
                     # Last turn: the final_response is the answer
                     turn_info["assistant_response"] = final_response
@@ -632,7 +655,7 @@ async def process_example_react(
                 "dataset_name": task_name,
                 "retrieval_type": "local_api_react",
                 "has_retrieval_content": any(r.has_content for r in retrieval_results),
-                "usage": usage,
+                "usage": _token_usage(usage),
                 "success": True,
                 "react_turns": turns_used,
                 "react_search_queries": all_search_queries,
@@ -948,10 +971,25 @@ async def run_async(args):
         )
 
     # Get model configuration
-    model_config = get_model_config(args.model)
+    if args.atlascloud:
+        model_config = get_atlascloud_config(args.model, args.api_key)
+    elif args.cheaperinference:
+        model_config = get_cheaperinference_config(args.model, args.api_key)
+    else:
+        model_config = get_model_config(args.model)
 
     # Handle OpenRouter API
-    if args.open_router:
+    if args.atlascloud:
+        api_base = model_config["api_base"]
+        api_key = model_config["api_key"]
+        model = model_config["model"]
+        logger.info(f"Using Atlas Cloud API with model: {model}")
+    elif args.cheaperinference:
+        api_base = model_config["api_base"]
+        api_key = model_config["api_key"]
+        model = model_config["model"]
+        logger.info(f"Using Cheaper Inference API with model: {model}")
+    elif args.open_router:
         api_base = "https://openrouter.ai/api/v1"
         if args.api_key and args.api_key != "dummy":
             api_key = args.api_key
@@ -975,6 +1013,26 @@ async def run_async(args):
             )
         logger.info(f"Using Commonstack API with model: {args.model}")
         model = args.model
+    elif args.orcarouter:
+        api_base = ORCAROUTER_API_BASE
+        if args.api_key and args.api_key != "dummy":
+            api_key = args.api_key
+        else:
+            api_key = os.getenv("ORCAROUTER_API_KEY")
+        if not api_key or api_key == "dummy":
+            raise ValueError(
+                "OrcaRouter API key required. Set --api-key or ORCAROUTER_API_KEY environment variable."
+            )
+        logger.info(f"Using OrcaRouter API with model: {args.model}")
+        model = args.model
+    elif args.litellm:
+        # LiteLLM SDK: the provider-prefixed --model selects the backend, and
+        # credentials come from each provider's own env var (or --api-base for a
+        # LiteLLM proxy). Keep both optional so blank values fall through to env.
+        model = args.model
+        api_base = args.api_base or ""
+        api_key = args.api_key or "dummy"
+        logger.info(f"Using LiteLLM SDK with model: {args.model}")
     else:
         # Override with command-line args if provided
         # For Gemini, api_base from config is None, so use command-line arg or default
@@ -983,7 +1041,7 @@ async def run_async(args):
             if args.api_base
             else (model_config["api_base"] or "http://localhost:8000/v1")
         )
-        api_key = args.api_key if args.api_key else model_config["api_key"]
+        api_key = args.api_key if args.api_key else (model_config["api_key"] or "dummy")
         model = model_config["model"]
 
     # Generate output filename with model name if output is not explicitly set
@@ -991,8 +1049,6 @@ async def run_async(args):
         # Determine mode for filename
         if args.url_screenshot:
             mode_str = "screenshot"
-        elif args.url_tiled_screenshot and args.local_wiki:
-            mode_str = "tiled_screenshot_localwiki"
         elif args.url_tiled_screenshot:
             mode_str = "tiled_screenshot"
         elif args.url_text:
@@ -1007,8 +1063,6 @@ async def run_async(args):
                 mode_str = "tiled_vector_colqwen"
             elif args.use_qwen3vl_embedding:
                 mode_str = "tiled_vector_qwen3vl_embedding"
-                if args.local_wiki:
-                    mode_str += "_localwiki"
                 if args.task == "encyclopedic_vqa":
                     if args.evqa_multimodal_query:
                         if args.evqa_multimodal_query_text_only:
@@ -1099,6 +1153,12 @@ async def run_async(args):
 
     retriever, mode = build_retriever(args, examples, model, api_base, api_key)
     # (retriever selection logic moved to simpleqa/retriever_factory.py)
+
+    if args.dump_retrieval:
+        from lib.dump_retrieval import dump_retrieval
+
+        await dump_retrieval(args, examples, retriever, run_metadata)
+        return
     # 3. Initialize LLM client
     llm_client = LLMClient(
         model=model,
@@ -1108,7 +1168,15 @@ async def run_async(args):
         max_context_tokens=args.model_context_length,
         timeout=args.timeout,
         enable_thinking=(False if args.no_think else None),
-        force_openai_compat=(args.open_router or args.commonstack),
+        force_openai_compat=(
+            args.open_router
+            or args.commonstack
+            or args.orcarouter
+            or args.atlascloud
+            or args.cheaperinference
+        ),
+        use_litellm=args.litellm,
+        retry_requests=not args.atlascloud,
     )
 
     # 3b. Create pixel-compressed encoder for generation if requested
@@ -1300,12 +1368,29 @@ def main():
         action="store_true",
         help="Overwrite output file if it exists",
     )
+    parser.add_argument(
+        "--dump-retrieval",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Retrieve only (no reader) and write records + retrieved tiles to DIR "
+        "(local-api retrieval only; resumable). See lib/dump_retrieval.py.",
+    )
 
     # API args
     parser.add_argument(
-        "--api-base", type=str, default="http://localhost:8000/v1", help="API base URL"
+        "--api-base",
+        type=str,
+        default=None,
+        help="API base URL (default: the model config's endpoint, "
+        "else http://localhost:8000/v1)",
     )
-    parser.add_argument("--api-key", type=str, default="dummy", help="API key")
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key (default: the model config's key, else 'dummy')",
+    )
     parser.add_argument(
         "--open-router",
         action="store_true",
@@ -1316,13 +1401,35 @@ def main():
         action="store_true",
         help="Use Commonstack API (https://api.commonstack.ai). Requires --api-key or COMMONSTACK_API_KEY env var.",
     )
+    parser.add_argument(
+        "--orcarouter",
+        action="store_true",
+        help="Use OrcaRouter API (https://api.orcarouter.ai). Requires --api-key or ORCAROUTER_API_KEY env var.",
+    )
+    parser.add_argument(
+        "--atlascloud",
+        action="store_true",
+        help="Use Atlas Cloud with an exact catalog model ID. Requires --api-key or ATLASCLOUD_API_KEY.",
+    )
+    parser.add_argument(
+        "--cheaperinference",
+        action="store_true",
+        help="Use Cheaper Inference (https://api.cheaperinference.com/v1) with a bare model ID. Requires --api-key or CHEAPER_INFERENCE_API_KEY.",
+    )
+    parser.add_argument(
+        "--litellm",
+        action="store_true",
+        help="Route generation through the LiteLLM SDK (100+ providers via one "
+        "provider-prefixed --model, e.g. anthropic/claude-3-5-sonnet). Optional "
+        "--api-base points at a LiteLLM proxy; keys fall back to each provider's env var.",
+    )
 
     # General args
     parser.add_argument(
         "--num-examples",
         type=int,
-        default=1000,
-        help="Number of examples (default: 1000 Wikipedia samples)",
+        default=None,
+        help="Number of examples to run (default: the whole filtered set)",
     )
     parser.add_argument(
         "--verified",
@@ -1439,8 +1546,8 @@ def main():
     parser.add_argument(
         "--jina-api-key",
         type=str,
-        default="jina_de9725ba5457460a9e5b0f89548e6657UN5YStvS5ingpklvVohWgOMiYRxn",
-        help="Jina API key",
+        default=os.environ.get("JINA_API_KEY"),
+        help="Jina API key (defaults to the JINA_API_KEY env var)",
     )
     parser.add_argument(
         "--retrieval-cache", type=str, default=None, help="Embedding cache file"
@@ -1582,20 +1689,6 @@ def main():
         help="Directory to store rendered pixel query images (default: pixel_queries)",
     )
 
-    # Local wiki-screenshot tiles (pre-rendered, from local kiwix tile store)
-    parser.add_argument(
-        "--local-wiki",
-        action="store_true",
-        help="Use pre-rendered Wikipedia tiles from local kiwix tile store instead of Selenium.",
-    )
-    parser.add_argument(
-        "--local-wiki-screenshot-dir",
-        type=str,
-        default=None,
-        help="Directory to store raw local-wiki tile downloads (default: screenshots-localwiki). "
-        "Keeps local-wiki cache separate from regular screenshots.",
-    )
-
     parser.add_argument(
         "--prebuilt-tiles-dir",
         type=str,
@@ -1692,12 +1785,6 @@ def main():
         help="Path to a JSON list of few-shot demos, each {'question','image_path','answer'}. "
         "When set, build_messages prepends (Example N, image, Q+A) blocks to every "
         "reader user-message. Works across pixel / text / naive modes.",
-    )
-    parser.add_argument(
-        "--lookup-reference-url",
-        action="store_true",
-        help="For local-api mode: also look up the ground-truth reference URL in kiwix "
-        "and append its tiles to the API search results (deduplicated by article ID).",
     )
     parser.add_argument(
         "--reranker",
@@ -1881,6 +1968,22 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.atlascloud and (
+        args.open_router or args.commonstack or args.orcarouter or args.litellm
+    ):
+        parser.error("--atlascloud cannot be combined with another provider flag")
+    if args.atlascloud and args.api_base:
+        parser.error("--atlascloud uses its fixed endpoint; omit --api-base")
+    if args.cheaperinference and (
+        args.open_router
+        or args.commonstack
+        or args.orcarouter
+        or args.atlascloud
+        or args.litellm
+    ):
+        parser.error("--cheaperinference cannot be combined with another provider flag")
+    if args.cheaperinference and args.api_base:
+        parser.error("--cheaperinference uses its fixed endpoint; omit --api-base")
 
     # Validate mutually exclusive options
     mode_count = sum(
@@ -1925,20 +2028,11 @@ def main():
     # Set default tiles-dir and screenshot-dir for EVQA (use cached paths)
     if args.task == "encyclopedic_vqa":
         if args.tiles_dir is None:
-            args.tiles_dir = "tiles/evqa_localwiki" if args.local_wiki else "tiles/evqa"
+            args.tiles_dir = "tiles/evqa"
         if args.use_tiled_retrieval and args.screenshot_dir == "screenshots":
-            args.screenshot_dir = (
-                "screenshots/evqa_localwiki" if args.local_wiki else "screenshots/evqa"
-            )
+            args.screenshot_dir = "screenshots/evqa"
     elif args.tiles_dir is None:
-        if args.local_wiki:
-            args.tiles_dir = f"tiles-local-wiki-h{args.tile_height}"
-        else:
-            args.tiles_dir = f"tiles-1024x{args.tile_height}"
-
-    # Default local-wiki screenshot dir
-    if args.local_wiki and args.local_wiki_screenshot_dir is None:
-        args.local_wiki_screenshot_dir = "screenshots-localwiki"
+        args.tiles_dir = f"tiles-1024x{args.tile_height}"
 
     # Auto-calculate max_context_chars if not set
     if args.max_context_chars is None:

@@ -8,6 +8,7 @@ search tool and synthesizes answers from visual retrieval results.
 Prerequisites:
     - ANTHROPIC_API_KEY env var set
     - pixelrag serve running on localhost:30001 (or set --endpoint)
+    - the Anthropic SDK: pip install anthropic
 
 Usage:
     # Interactive conversation with the agent
@@ -25,7 +26,10 @@ import json
 import sys
 import urllib.request
 
-import anthropic
+try:
+    import anthropic
+except ModuleNotFoundError:  # not a core dependency — see #197
+    sys.exit("This demo needs the Anthropic SDK: pip install anthropic")
 
 SEARCH_TOOL = {
     "name": "pixelrag_search",

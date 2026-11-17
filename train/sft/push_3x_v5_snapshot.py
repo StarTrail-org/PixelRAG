@@ -176,7 +176,7 @@ messages = [{{"role": "user", "content": [
 """
 
 
-def main():
+def main() -> None:
     assert SRC.exists(), f"missing {SRC}"
 
     print(f"=== {REPO_ID} ===")

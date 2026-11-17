@@ -26,7 +26,7 @@ def format_assistant(reasoning: str, answer: str) -> str:
     return f"<think>\n{reasoning.strip()}\n</think>\n\n{answer.strip()}"
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--traces",

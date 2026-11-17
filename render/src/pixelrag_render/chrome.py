@@ -14,8 +14,10 @@ Programmatic:
 """
 
 import json
+import logging
 import os
 import platform
+import re
 import subprocess
 import sys
 import tarfile
@@ -24,7 +26,30 @@ import urllib.request
 from pathlib import Path
 
 INSTALL_DIR = Path.home() / ".cache" / "pixelrag" / "chrome"
+
+
+def free_port() -> int:
+    """An unused localhost TCP port for --remote-debugging-port.
+
+    A fixed port (or a fixed base + worker id) collides across processes: a
+    second pixelshot run launches Chrome on a port the first already owns, its
+    CDP client attaches to the *first* process's browser, and that connection
+    dies the moment the first run tears its Chrome down -- surfacing as
+    ConnectionResetError or an empty result list. Asking the OS for a port makes
+    concurrent renders on one machine independent. See issue #54 for the
+    matching --user-data-dir collision.
+    """
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 VERSION_FILE = "version.json"
+logger = logging.getLogger(__name__)
+
+_SANDBOX_WARNING_EMITTED = False
 
 # Update these when releasing a new build
 CHROME_VERSION = "150.0.7844.0"
@@ -32,6 +57,40 @@ RELEASE_URL_TEMPLATE = (
     "https://github.com/StarTrail-org/PixelRAG/releases/download/"
     "chrome-{version}/headless_shell-linux-x64.tar.zst"
 )
+
+
+def sandbox_args() -> list[str]:
+    """Return Chrome sandbox arguments, adding ``--no-sandbox`` only when needed."""
+
+    global _SANDBOX_WARNING_EMITTED
+
+    args: list[str] = []
+    force_no_sandbox = os.environ.get("PIXELSHOT_NO_SANDBOX") == "1"
+    running_as_root = (
+        platform.system() == "Linux" and hasattr(os, "getuid") and os.getuid() == 0
+    )
+
+    if force_no_sandbox or running_as_root:
+        args.append("--no-sandbox")
+        if running_as_root and not _SANDBOX_WARNING_EMITTED:
+            logger.warning(
+                "Running Chrome as root on Linux; adding --no-sandbox to avoid crashes. "
+                "Set PIXELSHOT_NO_SANDBOX=1 to force this behavior."
+            )
+            _SANDBOX_WARNING_EMITTED = True
+
+    return args
+
+
+def _playwright_revision(path: str) -> int:
+    """Integer Playwright Chromium revision embedded in ``path``.
+
+    Playwright caches browsers under ``chromium-<revision>`` with a plain
+    monotonically-increasing integer revision. Paths without a recognizable
+    revision sort last (``-1``) rather than raising.
+    """
+    m = re.search(r"chromium-(\d+)", path)
+    return int(m.group(1)) if m else -1
 
 
 def _candidate_chrome_paths(system: str | None = None) -> list[str]:
@@ -55,8 +114,11 @@ def _candidate_chrome_paths(system: str | None = None) -> list[str]:
     paths.append(str(INSTALL_DIR / "headless_shell"))
 
     def add_playwright(cache_dir: Path, rel_glob: str) -> None:
-        # Newest chromium-NNNN first.
-        paths.extend(sorted(glob.glob(str(cache_dir / rel_glob)), reverse=True))
+        # Newest chromium-NNNN first. Sort by integer revision, not lexically:
+        # a string sort ranks "chromium-999" above "chromium-1187" once the
+        # revision crosses the 3→4 digit boundary, picking an older browser.
+        matches = glob.glob(str(cache_dir / rel_glob))
+        paths.extend(sorted(matches, key=_playwright_revision, reverse=True))
 
     if system == "Darwin":
         add_playwright(

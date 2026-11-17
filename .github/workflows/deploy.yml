@@ -18,8 +18,6 @@ jobs:
     runs-on: [self-hosted, deploy]
     steps:
       - name: Fast-forward working tree + restart what changed
-        env:
-          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           cd /home/yichuan/visrag
@@ -33,9 +31,35 @@ jobs:
           fi
           if ! git diff --quiet || ! git diff --cached --quiet; then
             echo "::warning::deploy box has uncommitted changes — skipping to avoid clobbering"
+            echo "### Deploy skipped: the box has uncommitted changes" >> "$GITHUB_STEP_SUMMARY"
+            git status --short >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
+          # Measure the change set from where this box actually is, not from
+          # github.event.before. A manual dispatch carries no `before`, and
+          # deploy.sh then falls back to the tip commit alone — so everything
+          # the box was behind by is invisible and the services that changed
+          # are never restarted, while the run still reports success. The
+          # tree's own HEAD is right for both triggers and for a box that has
+          # fallen several commits behind.
+          before=$(git rev-parse HEAD)
           git fetch origin main
-          git merge --ff-only origin/main
-          bash deploy/deploy.sh "${BEFORE:-}"
+          if git merge-base --is-ancestor origin/main HEAD; then
+            git merge --ff-only origin/main
+          else
+            # A branch merged with GitHub's squash option has a different
+            # commit ID, so a box that had that exact branch checked out can
+            # diverge even though its files already are on main. Reconcile the
+            # history only when the merge adds nothing beyond origin/main;
+            # genuine local work still stops the deploy.
+            merge_tree=$(git merge-tree --write-tree HEAD origin/main)
+            if [ "$(git rev-parse "$merge_tree^{tree}")" != \
+                 "$(git rev-parse "origin/main^{tree}")" ]; then
+              echo "::error::deploy box has local commits with content not on main; refusing to deploy"
+              exit 1
+            fi
+            echo "Reconciling squash-merged history; merged tree matches origin/main"
+            git merge --no-edit origin/main
+          fi
+          bash deploy/deploy.sh "$before"

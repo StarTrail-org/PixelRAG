@@ -8,10 +8,10 @@ Usage:
 """
 
 import argparse
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import unquote
-from pathlib import Path
 
 from libzim.reader import Archive
 

@@ -274,7 +274,7 @@ def extract_url_from_metadata(example: dict) -> str | None:
         url_match = re.search(r"https?://[^\s<>\"{}|\\^`\[\]]+", target_url)
         target_url = url_match.group(0) if url_match else None
 
-    # Note by Yichuan: strip URL fragment (#section) so that URLs differing
+    # Note: strip URL fragment (#section) so that URLs differing
     # only by anchor are treated as the same page for deduplication and
     # retrieval-accuracy matching.
     if target_url and "#" in target_url:
@@ -514,6 +514,7 @@ def make_compressed_encoder(compress_ratio: int, save_dir: str | None = None):
         """Encode image with pixel compression and save to disk."""
         import base64 as _b64
         from io import BytesIO
+
         from PIL import Image as _Image
 
         if not screenshot_path or not os.path.exists(screenshot_path):
@@ -662,8 +663,9 @@ def split_image_to_tiles(
     Returns:
         List of tile file paths.
     """
-    from PIL import Image
     import glob
+
+    from PIL import Image
 
     if not os.path.exists(image_path):
         return []
@@ -809,8 +811,9 @@ def load_nq_data(
     Returns:
         List of dicts with id, problem, gold_answers, metadata.
     """
-    from datasets import load_dataset
     import html as _html
+
+    from datasets import load_dataset
 
     if split not in {"train", "validation"}:
         raise ValueError(
@@ -899,9 +902,10 @@ def load_triviaqa_data(num_examples: int | None = 1000) -> list[dict]:
     Returns:
         List of dicts with id, problem, gold_answers, metadata.
     """
-    from datasets import load_dataset
     import ast as _ast
     from urllib.parse import quote as _url_quote
+
+    from datasets import load_dataset
 
     logger.info("Loading TriviaQA rc.wikipedia validation split (streaming)...")
     ds = load_dataset(
