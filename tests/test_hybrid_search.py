@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "serve" / "src"))
-from pixelrag_serve.hybrid import BM25Index, reciprocal_rank_fusion, load_or_build_bm25
+from pixelrag_serve.hybrid import BM25Index, load_or_build_bm25, reciprocal_rank_fusion
 
 
 @pytest.fixture

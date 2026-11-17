@@ -585,24 +585,27 @@ async def search(req: SearchRequest, request: Request):
             query_text = req.queries[qi].text
             if not query_text:
                 continue
-            # Get FAISS ranked list
-            faiss_ranked = [
-                (int(indices[qi, j]), float(distances[qi, j]))
-                for j in range(fetch_k)
-                if int(indices[qi, j]) != -1
-            ]
-            # Get BM25 ranked list
+            hits_by_vid = {hit["vector_id"]: hit for hit in raw[qi]}
+            faiss_ranked = [(hit["vector_id"], hit["score"]) for hit in raw[qi]]
             bm25_ranked = _state["bm25"].search(query_text, k=fetch_k)
-            # Fuse
-            fused = reciprocal_rank_fusion([faiss_ranked, bm25_ranked])
-            # Rewrite indices/distances for this query with fused order
-            for j, (vid, rrf_score) in enumerate(fused[:fetch_k]):
-                indices[qi, j] = vid
-                distances[qi, j] = rrf_score
-            # Pad remaining with -1
-            for j in range(len(fused), fetch_k):
-                indices[qi, j] = -1
-                distances[qi, j] = 0.0
+            fused = reciprocal_rank_fusion([faiss_ranked, bm25_ranked])[:fetch_k]
+
+            # BM25 can rank a vector the dense search never returned, and that
+            # is most of what hybrid retrieval is for. Those ids carry no
+            # SearchHit, so ask the backend for their metadata in one call
+            # rather than dropping them.
+            missing = [vid for vid, _ in fused if vid not in hits_by_vid]
+            if missing:
+                for hit in backend.hits_for(missing):
+                    hits_by_vid[hit["vector_id"]] = hit
+
+            fused_hits = []
+            for vid, rrf_score in fused:
+                hit = hits_by_vid.get(vid)
+                if hit is None:
+                    continue  # unknown to this index; nothing to serve for it
+                fused_hits.append({**hit, "score": float(rrf_score)})
+            raw[qi] = fused_hits
 
     # Build results
     tiles_dir = _state.get("tiles_dir", "")

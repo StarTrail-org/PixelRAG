@@ -23,7 +23,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 TRAIN_DIR = str(Path(__file__).resolve().parent.parent)
 sys.path.insert(0, TRAIN_DIR)
 
-import train_contrastors as tc  # noqa: E402
+import train_contrastors as tc
 
 WORLD = 2
 QUERIES_PER_RANK = 4
@@ -79,8 +79,8 @@ def _worker(rank, port, case, out_dir):
     loss_fn, hard_negatives = CASES[case]
     q, d = global_batch(hard_negatives)
     per_doc = QUERIES_PER_RANK * (1 + hard_negatives)
-    q = q[rank * QUERIES_PER_RANK:(rank + 1) * QUERIES_PER_RANK]
-    d = d[rank * per_doc:(rank + 1) * per_doc]
+    q = q[rank * QUERIES_PER_RANK : (rank + 1) * QUERIES_PER_RANK]
+    d = d[rank * per_doc : (rank + 1) * per_doc]
 
     model = DDP(Tower(), broadcast_buffers=False)
     scale = make_logit_scale()
@@ -107,7 +107,10 @@ def free_port():
 @pytest.mark.parametrize("case", list(CASES))
 def test_data_parallel_grads_match_global_batch(case, tmp_path):
     mp.start_processes(
-        _worker, args=(free_port(), case, str(tmp_path)), nprocs=WORLD, start_method="spawn"
+        _worker,
+        args=(free_port(), case, str(tmp_path)),
+        nprocs=WORLD,
+        start_method="spawn",
     )
 
     loss_fn, hard_negatives = CASES[case]

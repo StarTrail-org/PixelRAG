@@ -16,7 +16,9 @@ SOURCE = Path(__file__).resolve().parent.parent / "train_contrastors.py"
 def grad_cache_calls_in_main():
     tree = ast.parse(SOURCE.read_text())
     main = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
     )
     return [
         node
@@ -37,7 +39,9 @@ def test_every_grad_cache_call_passes_the_selected_loss():
         call.lineno
         for call in grad_cache_calls_in_main()
         if not any(
-            kw.arg == "loss_fn" and isinstance(kw.value, ast.Name) and kw.value.id == "active_loss_fn"
+            kw.arg == "loss_fn"
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == "active_loss_fn"
             for kw in call.keywords
         )
     ]
