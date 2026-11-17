@@ -23,7 +23,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 import uuid
@@ -169,8 +168,7 @@ WEB_SCRAPER_FEATURES = [
 ]
 
 
-def create_retriever(s, base_url, collection_id, *, name=None,
-                     feature_uris=None):
+def create_retriever(s, base_url, collection_id, *, name=None, feature_uris=None):
     uris = feature_uris or WEB_SCRAPER_FEATURES
     stages = []
     for uri in uris:
@@ -228,8 +226,9 @@ def main():
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--max-pages", type=int, default=50)
-    parser.add_argument("--crawl-mode", default="deterministic",
-                        choices=["deterministic", "semantic"])
+    parser.add_argument(
+        "--crawl-mode", default="deterministic", choices=["deterministic", "semantic"]
+    )
     parser.add_argument("--crawl-goal", help="Goal for semantic crawl mode")
     parser.add_argument("--render-strategy", default="auto")
     parser.add_argument("--chunk-strategy", default="paragraphs")
@@ -319,7 +318,7 @@ def main():
 
     print()
     print(f"  Namespace expires in {TTL_HOURS}h — no cleanup needed.")
-    print(f"  To keep it, remove the TTL via the Mixpeek dashboard.")
+    print("  To keep it, remove the TTL via the Mixpeek dashboard.")
 
 
 if __name__ == "__main__":
