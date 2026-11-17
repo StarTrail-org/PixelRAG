@@ -1,0 +1,20 @@
+services:
+  pixelrag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "8000:8000"
+    environment:
+      PIXELRAG_INDEX_DIR: /data/index
+      PIXELRAG_TILES_DIR: /data/tiles
+      PIXELRAG_ARTICLES_JSON: /data/index/articles.json
+    volumes:
+      # Host paths, not named volumes. The index is built on the host
+      # (`pixelrag index build`), and nothing in this stack can write a
+      # read-only named volume — so a first run against an empty one exited
+      # before uvicorn started. ./data/index rather than ./index: ./index is
+      # the pixelrag_index source package.
+      - ./data/index:/data/index:ro
+      - ./data/tiles:/data/tiles

@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""CPU embedding: embed tile chunks using transformers on CPU.
+"""Local embedding: embed tile chunks using transformers on CPU or Apple MPS.
 
-Slower than GPU backends (vLLM/sglang) but works without CUDA.
-Suitable for small-scale demos and testing.
+Works without CUDA — suitable for macOS (Apple Silicon), small-scale demos,
+and testing.
 
 Usage:
+    # CPU (any platform)
     python -m pixelrag_embed.embed_cpu \
-        --shard-dir ./tiles \
-        --output-dir ./embeddings \
-        --model Qwen/Qwen3-VL-Embedding-2B
+        --shard-dir ./tiles --output-dir ./embeddings
+
+    # Apple Silicon GPU (macOS)
+    python -m pixelrag_embed.embed_cpu \
+        --shard-dir ./tiles --output-dir ./embeddings --device mps
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -22,9 +27,36 @@ from PIL import Image
 from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-logger = logging.getLogger("embed_cpu")
+logger = logging.getLogger("embed_local")
 
 Image.MAX_IMAGE_PIXELS = None
+
+_RESIZE_FACTOR = 28
+_MAX_CHUNK_WIDTH = 875
+
+
+def _clamp_width(img: Image.Image, max_width: int = _MAX_CHUNK_WIDTH) -> Image.Image:
+    """Resize so width <= max_width, preserving aspect ratio (28px alignment)."""
+    w, h = img.size
+    if w <= max_width:
+        return img
+    scale = max_width / w
+    new_w = max(round(w * scale / _RESIZE_FACTOR) * _RESIZE_FACTOR, _RESIZE_FACTOR)
+    new_h = max(round(h * scale / _RESIZE_FACTOR) * _RESIZE_FACTOR, _RESIZE_FACTOR)
+    return img.resize((new_w, new_h), Image.LANCZOS)
+
+
+def _resolve_device(device: str) -> str:
+    """Resolve device string, auto-detecting MPS on macOS."""
+    import torch
+
+    if device == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    return device
 
 
 def scan_chunks(shard_dir: str) -> list[dict]:
@@ -38,7 +70,6 @@ def scan_chunks(shard_dir: str) -> list[dict]:
     for entry in sorted(shard.iterdir()):
         if not entry.is_dir():
             continue
-        # Support both flat (*.png.tiles/) and nested (sub_shard/*/**.png.tiles/)
         tile_dirs = []
         if entry.name.endswith(".png.tiles"):
             tile_dirs = [entry]
@@ -50,15 +81,30 @@ def scan_chunks(shard_dir: str) -> list[dict]:
             )
 
         for td in tile_dirs:
-            dir_name = td.name
-            article_id_str = dir_name.replace(".png.tiles", "")
-            try:
-                article_id = int(article_id_str)
-            except ValueError:
-                article_id = hash(article_id_str) % (2**31)
-
             chunks_json = td / "chunks.json"
             tiles_json = td / "tiles.json"
+
+            # Read article_id from the manifest (written by the pipeline).
+            # Fall back to parsing the directory name for backward compat
+            # with indexes built before this change.
+            article_id = None
+            for mf in (chunks_json, tiles_json):
+                if mf.exists() and article_id is None:
+                    try:
+                        article_id = json.loads(mf.read_text()).get("article_id")
+                    except (json.JSONDecodeError, OSError):
+                        pass
+            if article_id is None:
+                article_id_str = td.name.replace(".png.tiles", "")
+                try:
+                    article_id = int(article_id_str)
+                except ValueError:
+                    # Non-numeric dir name with no manifest article_id. Use a
+                    # stable hash (builtin hash() is salted by PYTHONHASHSEED and
+                    # would give a different id every build -> non-reproducible
+                    # index). sha1 keeps the same id for the same dir name.
+                    digest = hashlib.sha1(article_id_str.encode()).hexdigest()
+                    article_id = int(digest[:8], 16)
 
             if chunks_json.exists():
                 with open(chunks_json) as f:
@@ -97,21 +143,29 @@ def scan_chunks(shard_dir: str) -> list[dict]:
 
 
 def embed_items(
-    items: list[dict], model_name: str, instruction: str = ""
+    items: list[dict],
+    model_name: str,
+    device: str = "cpu",
+    instruction: str = "",
 ) -> np.ndarray:
-    """Embed a list of image items using transformers on CPU."""
+    """Embed image items using transformers on the given device."""
     import torch
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
-    logger.info("Loading model %s on CPU...", model_name)
+    device = _resolve_device(device)
+    dtype = torch.float32 if device == "cpu" else torch.float16
+
+    logger.info("Loading model %s on %s (%s)...", model_name, device, dtype)
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         model_name,
         trust_remote_code=True,
-        dtype=torch.float32,
+        torch_dtype=dtype,
         attn_implementation="sdpa",
     ).eval()
-    logger.info("Model loaded")
+    if device != "cpu":
+        model = model.to(device)
+    logger.info("Model loaded on %s", device)
 
     dim = model.config.text_config.hidden_size
     embeddings = np.zeros((len(items), dim), dtype=np.float16)
@@ -120,6 +174,7 @@ def embed_items(
 
     for i, item in enumerate(tqdm(items, desc="Embedding")):
         img = Image.open(item["path"]).convert("RGB")
+        img = _clamp_width(img)
 
         messages = [
             {
@@ -135,31 +190,42 @@ def embed_items(
             messages, tokenize=False, add_generation_prompt=True
         )
         inputs = processor(text=[text], images=[img], return_tensors="pt", padding=True)
+        if device != "cpu":
+            inputs = {
+                k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()
+            }
 
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
             last_hidden = outputs.hidden_states[-1]
-            # Last token pooling
             seq_lens = inputs["attention_mask"].sum(dim=1)
             last_idx = seq_lens - 1
             pooled = last_hidden[0, last_idx[0]]
-            # L2 normalize
             pooled = pooled / pooled.norm()
-            embeddings[i] = pooled.numpy().astype(np.float16)
+            embeddings[i] = pooled.cpu().numpy().astype(np.float16)
 
-        if (i + 1) % 10 == 0:
+        # tqdm covers interactive runs but never reaches log files; when
+        # stderr is not a TTY (nohup/CI/redirects) emit a periodic record so
+        # long embeds stay observable after the fact.
+        if (i + 1) % 100 == 0 and not sys.stderr.isatty():
             logger.info("Embedded %d/%d", i + 1, len(items))
 
     return embeddings
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CPU embedding for tile chunks")
+    parser = argparse.ArgumentParser(description="Local embedding (CPU / MPS / CUDA)")
     parser.add_argument(
         "--shard-dir", required=True, help="Directory with *.png.tiles/ subdirs"
     )
     parser.add_argument("--output-dir", required=True, help="Output directory for .npz")
     parser.add_argument("--model", default="Qwen/Qwen3-VL-Embedding-2B")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        choices=["auto", "cpu", "mps", "cuda"],
+        help="Device (default: auto-detect)",
+    )
     parser.add_argument(
         "--instruction", default="", help="Instruction prefix for queries"
     )
@@ -178,9 +244,10 @@ def main():
         items = items[: args.limit]
     else:
         logger.info("Found %d chunks to embed", len(items))
-    embeddings = embed_items(items, args.model, args.instruction)
+    embeddings = embed_items(
+        items, args.model, device=args.device, instruction=args.instruction
+    )
 
-    # Save NPZ in same format as embed.py
     output_path = Path(args.output_dir) / "shard_000.npz"
     np.savez(
         output_path,

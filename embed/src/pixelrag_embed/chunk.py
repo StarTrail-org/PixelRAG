@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Pre-chunk tile images into 1024px-height strips on disk.
+"""Pre-chunk tile images into model-sized pieces on disk.
 
-For each article directory (*.png.tiles/), reads every tile_XXXX.png,
-splits it into 1024px-tall chunks, writes chunk_XXXX_YY.png files,
-and saves a chunks.json manifest recording the mapping.
+For each article directory (*.png.tiles/), reads every tile_XXXX.png and splits
+it into a grid of <=1024px-tall x <=viewport_width-wide chunks (writing
+chunk_XXXX_YY.png files) plus a chunks.json manifest recording each chunk's
+x_offset/y_offset/width/height. Narrow web tiles (<= viewport_width) keep their
+old single-column height-strip layout; wider sources (PDFs, landscape pages) are
+also split along the width so the embedder never has to drop an oversized chunk.
 
 Usage:
     # Single shard
@@ -33,6 +36,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from PIL import Image
+from tqdm import tqdm
 
 Image.MAX_IMAGE_PIXELS = None  # some tiles exceed default 178M pixel limit
 
@@ -81,7 +85,13 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
         raw = f.read().strip()
     if not raw:
         return None
-    meta = json.loads(raw)
+    try:
+        meta = json.loads(raw)
+    except json.JSONDecodeError:
+        # A truncated manifest (crash mid-write) must not take down the whole
+        # shard/build — skip this article like other unreadable dirs.
+        logger.warning("Corrupt tiles.json in %s — skipping", article_dir)
+        return None
 
     tile_names = meta.get("tiles", [])
     if not tile_names:
@@ -124,6 +134,7 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
     page_height = meta.get("page_height", 0)
     viewport_width = meta.get("viewport_width", 875)
     tile_height = meta.get("tile_height", 8192)
+    article_id = meta.get("article_id")  # propagate from tiles.json into chunks.json
 
     chunks_info = []  # list of {tile, chunk_index, file, y_offset, height}
     files_written = 0
@@ -145,19 +156,25 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
             tile_base = tile_base.replace(ext, "")
         tile_idx = int(tile_base)
 
-        if h <= CHUNK_HEIGHT:
-            # No chunking needed — copy tile as chunk_XXXX_00.png
+        # Fast path: web tiles (<= viewport_width) that fit one strip are copied
+        # verbatim — byte-identical to the pre-2D-tiling behavior.
+        if w <= viewport_width and h <= CHUNK_HEIGHT:
             chunk_name = f"chunk_{tile_idx:04d}_00.png"
             chunk_path = os.path.join(article_dir, chunk_name)
             if not dry_run:
-                shutil.copy2(tile_path, chunk_path)
+                if tile_path.endswith(".png"):
+                    shutil.copy2(tile_path, chunk_path)
+                else:
+                    img.save(chunk_path, format="PNG")
                 files_written += 1
+            img.close()
             chunks_info.append(
                 {
                     "tile": tile_name,
                     "tile_index": tile_idx,
                     "chunk_index": 0,
                     "file": chunk_name,
+                    "x_offset": 0,
                     "y_offset": 0,
                     "height": h,
                     "width": w,
@@ -165,39 +182,48 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
             )
             continue
 
-        # Split into CHUNK_HEIGHT strips
-        y = 0
+        # 2D grid: CHUNK_HEIGHT-tall row strips x viewport_width-wide columns.
+        # Columns are a full viewport_width each (the model's native width) with
+        # the remainder in the last column — not evened out — so most content
+        # lands at the in-distribution width the index was built on. chunk_index
+        # is a flat row-major counter, so single-column tiles keep the same
+        # 0, 1, 2, ... order (and identical crops) as before.
         chunk_idx = 0
+        y = 0
         while y < h:
-            remaining = h - y
-            ch = min(CHUNK_HEIGHT, remaining)
-
-            # Discard tiny tail chunks (< 28px = one Qwen3-VL patch)
+            ch = min(CHUNK_HEIGHT, h - y)
+            # Discard tiny height tail (< 28px = one Qwen3-VL patch)
             if ch < MIN_CHUNK_HEIGHT:
                 break
 
-            chunk_name = f"chunk_{tile_idx:04d}_{chunk_idx:02d}.png"
-            chunk_path = os.path.join(article_dir, chunk_name)
+            x = 0
+            while x < w:
+                cw = min(viewport_width, w - x)
+                if cw < MIN_CHUNK_HEIGHT:  # discard tiny right-edge sliver
+                    break
 
-            if not dry_run:
-                crop = img.crop((0, y, w, y + ch))
-                crop.save(chunk_path, format="PNG")
-                files_written += 1
+                chunk_name = f"chunk_{tile_idx:04d}_{chunk_idx:02d}.png"
+                chunk_path = os.path.join(article_dir, chunk_name)
+                if not dry_run:
+                    img.crop((x, y, x + cw, y + ch)).save(chunk_path, format="PNG")
+                    files_written += 1
 
-            chunks_info.append(
-                {
-                    "tile": tile_name,
-                    "tile_index": tile_idx,
-                    "chunk_index": chunk_idx,
-                    "file": chunk_name,
-                    "y_offset": y,
-                    "height": ch,
-                    "width": w,
-                }
-            )
+                chunks_info.append(
+                    {
+                        "tile": tile_name,
+                        "tile_index": tile_idx,
+                        "chunk_index": chunk_idx,
+                        "file": chunk_name,
+                        "x_offset": x,
+                        "y_offset": y,
+                        "height": ch,
+                        "width": cw,
+                    }
+                )
+                chunk_idx += 1
+                x += cw
 
             y += ch
-            chunk_idx += 1
 
         img.close()
 
@@ -215,10 +241,14 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
         "tile_hashes": tile_hashes,
         "chunks": chunks_info,
     }
+    if article_id is not None:
+        manifest["article_id"] = article_id
 
     if not dry_run:
-        with open(chunks_json, "w") as f:
+        tmp_chunks = chunks_json + ".tmp"
+        with open(tmp_chunks, "w") as f:
             json.dump(manifest, f)
+        os.replace(tmp_chunks, chunks_json)
 
     return {
         "article_dir": article_dir,
@@ -229,9 +259,12 @@ def chunk_article(article_dir: str, dry_run: bool = False, force: bool = False) 
 
 
 def _delete_tiles_in_shard(shard_dir: str) -> int:
-    """Delete tile_*.png for all articles with chunks.json in a shard.
+    """Delete source tiles only after validating an article's chunk inventory.
 
-    Tiles referenced directly as chunk files (h <= 1024) are preserved.
+    Every remaining source needs coverage and every declared chunk must be a
+    nonempty local regular file. PDF pages referenced as chunks are preserved.
+    This trusts the manifest's coverage; it does not decode images, verify pixel
+    geometry/freshness, or protect against concurrent filesystem mutation.
     """
     deleted = 0
     for sub in Path(shard_dir).iterdir():
@@ -240,27 +273,68 @@ def _delete_tiles_in_shard(shard_dir: str) -> int:
         for article_dir in sub.iterdir():
             if not article_dir.is_dir() or not article_dir.name.endswith(".png.tiles"):
                 continue
-            cj_path = article_dir / "chunks.json"
-            if not cj_path.exists():
+            tiles = [
+                p
+                for p in article_dir.iterdir()
+                if p.name.startswith("tile_") and p.suffix in (".png", ".jpg", ".jpeg")
+            ]
+            if not tiles:
                 continue
-            # Collect tile files referenced as chunks (small tiles, not split)
+            # Validate the entire inventory before unlinking anything. A chunk
+            # for one tile must not authorize deletion of another tile.
             try:
-                with open(cj_path) as f:
+                with open(article_dir / "chunks.json") as f:
                     manifest = json.load(f)
-                keep = {
-                    c["file"]
-                    for c in manifest.get("chunks", [])
-                    if c["file"].startswith("tile_")
-                }
-            except (json.JSONDecodeError, KeyError):
-                keep = set()
-            for f in article_dir.iterdir():
-                if f.name.startswith("tile_") and f.name.endswith(
-                    (".png", ".jpg", ".jpeg")
+                chunks = manifest.get("chunks") if isinstance(manifest, dict) else None
+                if not isinstance(chunks, list) or not chunks:
+                    raise ValueError("missing or empty chunk inventory")
+                # Reject bool: bool subclasses int.
+                if "num_chunks" in manifest and (
+                    type(manifest["num_chunks"]) is not int
+                    or manifest["num_chunks"] != len(chunks)
                 ):
-                    if f.name not in keep:
-                        f.unlink()
-                        deleted += 1
+                    raise ValueError("chunk count does not match inventory")
+                covered, keep = set(), set()
+                for chunk in chunks:
+                    if not isinstance(chunk, dict):
+                        raise TypeError("invalid chunk record")
+                    tile, filename = chunk.get("tile"), chunk.get("file")
+                    for name in (tile, filename):
+                        if (
+                            not isinstance(name, str)
+                            or not name
+                            or Path(name).name != name
+                            or "\\" in name
+                            or Path(name).suffix not in (".png", ".jpg", ".jpeg")
+                        ):
+                            raise ValueError(
+                                "chunk requires local tile/file image names"
+                            )
+                    path = article_dir / filename
+                    if (
+                        path.is_symlink()
+                        or not path.is_file()
+                        or path.stat().st_size == 0
+                    ):
+                        raise ValueError(f"missing or unsafe replacement: {filename}")
+                    if filename in keep:
+                        raise ValueError(f"duplicate replacement: {filename}")
+                    covered.add(tile)
+                    keep.add(filename)
+                if any(p.is_symlink() or not p.is_file() for p in tiles):
+                    raise ValueError("ambiguous source tile inventory")
+                uncovered = {p.name for p in tiles} - covered
+                if uncovered:
+                    raise ValueError(
+                        f"tiles without replacement coverage: {sorted(uncovered)}"
+                    )
+            except (OSError, TypeError, ValueError) as e:
+                logger.warning("Retaining source tiles in %s: %s", article_dir, e)
+                continue
+            for tile in tiles:
+                if tile.name not in keep:
+                    tile.unlink()
+                    deleted += 1
     return deleted
 
 
@@ -269,6 +343,7 @@ def process_shard(
     dry_run: bool = False,
     force: bool = False,
     delete_tiles: bool = False,
+    progress: bool = True,
 ) -> dict:
     """Chunk all articles in a shard directory."""
     t0 = time.time()
@@ -290,21 +365,28 @@ def process_shard(
         # Flat structure — article dirs directly in shard_dir
         sub_dirs = [Path(shard_dir)]
 
-    for sub_dir in sub_dirs:
-        for article_dir in sorted(sub_dir.iterdir()):
-            if not article_dir.is_dir() or not article_dir.name.endswith(".png.tiles"):
-                continue
-            total_articles += 1
+    all_article_dirs = [
+        article_dir
+        for sub_dir in sub_dirs
+        for article_dir in sorted(sub_dir.iterdir())
+        if article_dir.is_dir() and article_dir.name.endswith(".png.tiles")
+    ]
 
-            result = chunk_article(str(article_dir), dry_run=dry_run, force=force)
-            if result is None:
-                skipped_articles += 1
-                continue
+    # The bar is disabled when this runs inside a ProcessPoolExecutor worker
+    # (--tiles-dir mode): up to 96 concurrent bars would trample each other
+    # on one terminal. The parent shows a shard-level bar instead.
+    for article_dir in tqdm(all_article_dirs, desc="Chunking", disable=not progress):
+        total_articles += 1
 
-            chunked_articles += 1
-            total_tiles += result["num_tiles"]
-            total_chunks += result["num_chunks"]
-            total_files += result["files_written"]
+        result = chunk_article(str(article_dir), dry_run=dry_run, force=force)
+        if result is None:
+            skipped_articles += 1
+            continue
+
+        chunked_articles += 1
+        total_tiles += result["num_tiles"]
+        total_chunks += result["num_chunks"]
+        total_files += result["files_written"]
 
     # Delete tiles after chunking the whole shard
     tiles_deleted = 0
@@ -312,7 +394,7 @@ def process_shard(
         tiles_deleted = _delete_tiles_in_shard(shard_dir)
 
     elapsed = time.time() - t0
-    shard_name = os.path.basename(shard_dir.rstrip("/"))
+    shard_name = os.path.basename(shard_dir.rstrip("/\\"))
     return {
         "shard": shard_name,
         "articles": total_articles,
@@ -399,11 +481,18 @@ def main():
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(
-                process_shard, sd, args.dry_run, args.force, args.delete_tiles
+                process_shard,
+                sd,
+                args.dry_run,
+                args.force,
+                args.delete_tiles,
+                progress=False,
             ): sd
             for sd in shard_dirs
         }
-        for fut in as_completed(futures):
+        for fut in tqdm(
+            as_completed(futures), total=len(futures), desc="Chunking shards"
+        ):
             sd = futures[fut]
             try:
                 r = fut.result()

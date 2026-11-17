@@ -25,31 +25,48 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import signal
 import struct
 import subprocess
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
+
+from ..chrome import free_port, sandbox_args
+from .page_metrics import CONTENT_BOTTOM_JS, truncation_reason
 
 logger = logging.getLogger("pixelrag_render.backends.fast_cdp")
 
 VIEWPORT_WIDTH = 875
 TILE_HEIGHT = 8192
 
+# GPU rasterization default OFF — headless Chrome falls back to software and ignores these
+# flags (no-op, never sped anything up), but on a GPU box without device access it crashes the
+# GPU process and hangs capture. Inherited-from-initial-release assumption that didn't hold.
+# Opt in with PIXELSHOT_ENABLE_GPU=1 only on a real graphics-GPU box with device access.
+_GPU_ARGS = (
+    ["--enable-gpu-rasterization", "--force-gpu-rasterization"]
+    if os.environ.get("PIXELSHOT_ENABLE_GPU")
+    else ["--disable-gpu"]
+)
 CHROME_ARGS = [
-    "--no-sandbox",
+    *sandbox_args(),
     "--disable-dev-shm-usage",
-    "--enable-gpu-rasterization",
-    "--force-gpu-rasterization",
+    *_GPU_ARGS,
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
     "--disable-background-networking",
     "--disable-features=Translate,MediaRouter,OptimizationHints",
 ]
 
-# JS: wait for fonts + eager images, then return scrollHeight
-_WAIT_FONTS_IMGS = """new Promise(resolve => {
+# JS: wait for fonts + eager images, then return the page height to tile
+_WAIT_FONTS_IMGS = (
+    """new Promise(resolve => {
+    """
+    + CONTENT_BOTTOM_JS
+    + """
     const waitEagerImgs = Promise.all(
         Array.from(document.images)
             .filter(i => !i.complete && i.loading !== 'lazy')
@@ -69,17 +86,54 @@ _WAIT_FONTS_IMGS = """new Promise(resolve => {
                 const sh = document.documentElement.scrollHeight;
                 const body = document.body;
                 resolve(body
-                    ? Math.min(sh, Math.max(Math.ceil(body.getBoundingClientRect().bottom), 1))
+                    ? Math.min(sh, Math.max(contentBottom(body), 1))
                     : sh);
             });
         });
     });
 })"""
+)
 
 
 # ---------------------------------------------------------------------------
 # Subprocess: JPEG compression (runs in ProcessPoolExecutor worker)
 # ---------------------------------------------------------------------------
+
+
+def _pin_to_cores(cores) -> None:
+    """Pool initializer: keep compression workers off the capture cores.
+
+    Module level, not a closure, because the pool is started with "spawn" — the
+    initializer has to survive pickling, which a nested function does not.
+    """
+    try:
+        os.sched_setaffinity(0, cores)
+    except (OSError, AttributeError):
+        pass  # not Linux, or the affinity call is unavailable — harmless
+
+
+def _raw_scratch_dir() -> Path:
+    """Per-user scratch directory on /dev/shm for Chrome's raw BGRA dumps.
+
+    `/dev/shm` is shared by every user on the box, so a fixed path belongs to
+    whoever ran first: the directory lands at 0775 owned by them, and for every
+    later user `mkdir(exist_ok=True)` still succeeds while Chrome's write into it
+    is denied. That combination is silent — capture reports success, the manifest
+    claims N tiles, and not one image is written. Scoping the path to the current
+    uid keeps users out of each other's way.
+
+    The writability check is here rather than at first write because the failure
+    it catches surfaces inside Chrome, whose stderr this backend discards.
+    """
+    d = Path(f"/dev/shm/pixelrag_render-{os.getuid()}/raw")
+    d.mkdir(parents=True, exist_ok=True)
+    if not os.access(d, os.W_OK):
+        raise RuntimeError(
+            f"{d} is not writable by uid {os.getuid()}. Chrome writes raw tiles "
+            "there; without write access every capture is silently lost. Remove "
+            "the directory and re-run, or set the turbo path aside with turbo=False."
+        )
+    return d
 
 
 def compress_tile(raw_path: str, out_path: str, quality: int = 85) -> None:
@@ -105,22 +159,24 @@ def compress_tile(raw_path: str, out_path: str, quality: int = 85) -> None:
 # Chrome connection helpers (inlined to avoid circular deps)
 # ---------------------------------------------------------------------------
 
-_port_counter = 0
-
-
-def _next_base_port() -> int:
-    global _port_counter
-    _port_counter += 1
-    return 12000 + (_port_counter - 1) * 500
-
 
 async def _launch_chrome(chrome_path: str, port: int) -> tuple:
-    """Launch a headless Chrome and return (websocket, proc)."""
+    """Launch a headless Chrome and return (websocket, proc, user_data_dir)."""
     import websockets
 
+    # Isolated profile per worker. Without --user-data-dir, a launch on a machine that
+    # already has Chrome open forwards to the running instance (default profile) instead
+    # of starting this headless renderer — navigation/screenshot then hang forever. A
+    # unique dir also stops parallel workers from colliding on one profile. See issue #54.
+    user_data_dir = tempfile.mkdtemp(prefix=f"pixelshot_chrome_{port}_")
     args = (
         # `--headless=new`: bare `--headless` is deprecated and hangs on modern Chrome.
-        [chrome_path, f"--remote-debugging-port={port}", "--headless=new"]
+        [
+            chrome_path,
+            f"--remote-debugging-port={port}",
+            "--headless=new",
+            f"--user-data-dir={user_data_dir}",
+        ]
         + CHROME_ARGS
         + ["about:blank"]
     )
@@ -133,24 +189,30 @@ async def _launch_chrome(chrome_path: str, port: int) -> tuple:
                 f"http://localhost:{port}/json", timeout=3
             ).read()
             targets = json.loads(data)
+            # Pick a real page target — Chrome's built-in component extensions
+            # (Cast/Media Router) expose background_page targets that show up
+            # first in /json but never render navigations, hanging CDP capture.
+            pages = [t for t in targets if t.get("type") == "page"] or targets
             ws = await websockets.connect(
-                targets[0]["webSocketDebuggerUrl"],
+                pages[0]["webSocketDebuggerUrl"],
                 open_timeout=10,
                 max_size=50 * 1024 * 1024,
             )
-            return ws, proc
+            return ws, proc, user_data_dir
         except Exception:
             if attempt == 9:
                 proc.kill()
+                shutil.rmtree(user_data_dir, ignore_errors=True)
                 raise ConnectionError(f"Failed to connect to Chrome on port {port}")
 
 
 class _Conn:
     """Minimal CDP connection with a receive loop."""
 
-    def __init__(self, ws, proc):
+    def __init__(self, ws, proc, user_data_dir=None):
         self._ws = ws
         self._proc = proc
+        self._user_data_dir = user_data_dir
         self._msg_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._event_listeners: dict[str, list] = {}
@@ -234,6 +296,8 @@ class _Conn:
             self._proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self._proc.kill()
+        if self._user_data_dir:
+            shutil.rmtree(self._user_data_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +314,7 @@ async def _run_render(
     jpeg_quality: int,
     n_compressors: int,
 ) -> dict:
-    raw_dir = Path("/dev/shm/pixelrag_render/raw")
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = _raw_scratch_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Semaphore: limit concurrent captures (CPU-bound) to n_workers // 2
@@ -261,7 +324,7 @@ async def _run_render(
     # Compression: dedicated thread with its own multiprocessing.Pool.
     # Tiles are pushed to a thread-safe queue from capture workers.
     # The thread runs pool.starmap in batches, fully independent of asyncio.
-    from multiprocessing import Pool as MPPool
+    import multiprocessing
     import queue as _queue
     import threading
 
@@ -277,15 +340,20 @@ async def _run_render(
     n_cpus = os.cpu_count() or 128
     compress_cores = set(range(max(0, n_cpus - n_compressors), n_cpus))
 
-    def _pool_init():
-        try:
-            os.sched_setaffinity(0, compress_cores)
-        except OSError:
-            pass
-
     def _compressor_thread():
-        pool = MPPool(processes=n_compressors, initializer=_pool_init)
-        # Warm up: ensure all workers are forked and idle before capture starts
+        # "spawn", not the platform default. This pool is created from a thread while
+        # the capture side already runs its own threads, and forking a multi-threaded
+        # process can deadlock the child on a lock that was held at fork time — CPython
+        # warns about exactly this since 3.12. In a single-threaded caller the fork
+        # happens to work, which is why it survived so long; under any threaded host
+        # (a test session that ran async tests first, a web server calling into the
+        # renderer) it hangs with no output and no error.
+        pool = multiprocessing.get_context("spawn").Pool(
+            processes=n_compressors,
+            initializer=_pin_to_cores,
+            initargs=(compress_cores,),
+        )
+        # Warm up: ensure all workers are up and idle before capture starts
         pool.map(int, range(n_compressors))
         async_results = []
         while True:
@@ -293,20 +361,30 @@ async def _run_render(
             if item is None:
                 break
             async_results.append(pool.apply_async(compress_tile, item))
-        # Wait for all remaining
+        # Wait for all remaining. A compression failure means that tile never
+        # reached disk, so it has to be counted and logged: swallowing it let a
+        # run report "Done: 13 tiles" with an empty output directory.
+        failed = 0
         for ar in async_results:
             try:
                 ar.get(timeout=60)
-            except Exception:
-                pass
+            except Exception as e:
+                failed += 1
+                if failed <= 3:  # one line per failure is enough to diagnose
+                    logger.error("tile compression failed: %s: %s", type(e).__name__, e)
+        if failed:
+            logger.error(
+                "%d/%d tiles failed to compress and were NOT written to disk",
+                failed,
+                len(async_results),
+            )
+            metrics["errors"] += failed
         pool.close()
         pool.join()
         compress_done.set()
 
     compress_thread = threading.Thread(target=_compressor_thread, daemon=True)
     compress_thread.start()
-
-    base_port = _next_base_port()
 
     # Work-stealing queue
     work_q: asyncio.Queue = asyncio.Queue()
@@ -317,15 +395,13 @@ async def _run_render(
     connections: list[_Conn] = []
     frame_ids: list[str] = []
 
-    logger.info(
-        "Launching %d Chrome workers on ports %d-%d",
-        n_workers,
-        base_port,
-        base_port + n_workers - 1,
-    )
-    for i in range(n_workers):
-        ws, proc = await _launch_chrome(chrome_path, base_port + i)
-        conn = _Conn(ws, proc)
+    # One OS-assigned port per worker: a fixed base collides with any other
+    # pixelshot process on the machine (see chrome.free_port).
+    ports = [free_port() for _ in range(n_workers)]
+    logger.info("Launching %d Chrome workers on ports %s", n_workers, ports)
+    for port in ports:
+        ws, proc, user_data_dir = await _launch_chrome(chrome_path, port)
+        conn = _Conn(ws, proc, user_data_dir)
         connections.append(conn)
 
     for i, conn in enumerate(connections):
@@ -405,9 +481,11 @@ async def _run_render(
                         },
                     )
                     page_h = r["result"]["result"]["value"]
-                    if not page_h or page_h <= 0:
+                    height_measured = bool(page_h) and page_h > 0
+                    if not height_measured:
                         page_h = tile_height
                 except Exception:
+                    height_measured = False
                     page_h = tile_height
 
                 n_tiles = max(1, (page_h + tile_height - 1) // tile_height)
@@ -499,13 +577,29 @@ async def _run_render(
                     n_written += 1
                     tile_names.append(f"tile_{t:04d}.jpg")
 
-                # Write manifest
+                # Write manifest. `complete` has to mean something here too —
+                # see page_metrics.truncation_reason; the standard path applies
+                # the identical rule, so a manifest reads the same whichever
+                # Chrome the capture happened to run on.
+                reason = truncation_reason(
+                    page_h, tile_height, measured=height_measured
+                )
+                if reason:
+                    logger.warning(
+                        "[w%d] %s: %s — marking the manifest incomplete",
+                        wi,
+                        art_path,
+                        reason,
+                    )
+
                 manifest = {
                     "path": art_path,
                     "url": target_url,
                     "page_height": page_h,
+                    "tile_height": tile_height,
+                    "viewport_width": VIEWPORT_WIDTH,
                     "tiles": tile_names,
-                    "complete": True,
+                    "complete": reason is None,
                 }
                 with open(tile_dir / "tiles.json", "w") as f:
                     json.dump(manifest, f)

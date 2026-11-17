@@ -14,7 +14,7 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
 export async function search(req: SearchRequest): Promise<SearchResponse> {
   return fetchApi<SearchResponse>("/search", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Source": "search" },
     // NOTE: the visual grid intentionally does NOT set articles_only — the
     // Portal/Featured-picture pages it would drop are often the most visually
     // striking tiles (panoramas, paintings), which is the point of this view.

@@ -20,6 +20,7 @@ def render_pdf(
     dpi: int = 200,
     pages: Optional[list[int]] = None,
     quality: int = 85,
+    stem: str | None = None,
 ) -> list[Path]:
     """Render a PDF to JPEG tiles.
 
@@ -31,7 +32,11 @@ def render_pdf(
         output_dir: Directory to write the tile subdirectory into.
         dpi: Resolution for rendering (default 200 gives ~1650×2200px for A4).
         pages: 1-based list of page numbers to render. ``None`` renders all pages.
+            Tile filenames and indices retain their zero-based source page index.
         quality: JPEG quality 1-100 (default 85).
+        stem: Override for the tile directory name. Defaults to the PDF filename
+            stem. The pipeline passes the article_id here so directory names
+            are always numeric and consistent with articles.json.
 
     Returns:
         List containing the single tile directory Path on success.
@@ -55,7 +60,8 @@ def render_pdf(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = path.stem
+    if stem is None:
+        stem = path.stem
     tile_dir = output_dir / f"{stem}.png.tiles"
     tile_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,10 +82,12 @@ def render_pdf(
     images = convert_from_path(**convert_kwargs)
 
     saved_tiles: list[str] = []
-    for idx, img in enumerate(images):
+    chunks_info: list[dict] = []
+    first_index = convert_kwargs.get("first_page", 1) - 1
+    for idx, img in enumerate(images, start=first_index):
         # If caller provided a sparse page list, skip pages not in the list
         if pages is not None:
-            page_num = min(pages) + idx
+            page_num = idx + 1
             if page_num not in pages:
                 continue
 
@@ -87,17 +95,52 @@ def render_pdf(
         tile_path = tile_dir / tile_name
         img.save(str(tile_path), "JPEG", quality=quality)
         saved_tiles.append(tile_name)
-        logger.debug("  Page %d → %s (%dx%d)", idx, tile_name, *img.size)
+        w, h = img.size
+        # Each PDF page = one chunk (no further splitting)
+        chunks_info.append(
+            {
+                "tile": tile_name,
+                "tile_index": idx,
+                "chunk_index": 0,
+                "file": tile_name,
+                "y_offset": 0,
+                "height": h,
+                "width": w,
+            }
+        )
+        logger.debug("  Page %d → %s (%dx%d)", idx, tile_name, w, h)
 
     manifest = {
         "source": str(path),
         "dpi": dpi,
         "total_pages": len(saved_tiles),
         "tiles": saved_tiles,
-        "complete": True,
+        # The selection the render ran with, recorded for the same reason the
+        # URL manifests record their tile height: so a consumer reading
+        # tiles.json can see what was asked for rather than be told out of band.
+        "requested_pages": sorted(pages) if pages is not None else None,
+        # A page selection means these tiles are some of the document rather
+        # than all of it, and nothing here has checked the selection against
+        # the document's length. Only a whole-document render may claim to be
+        # complete — see #139 on what an unconditional flag costs downstream.
+        "complete": pages is None,
     }
     with open(tile_dir / "tiles.json", "w") as f:
         json.dump(manifest, f)
+
+    # Write chunks.json so the chunker skips this directory —
+    # each PDF page is already a natural semantic unit.
+    chunks_manifest = {
+        "page_height": 0,
+        "viewport_width": images[0].size[0] if images else 0,
+        "tile_height": images[0].size[1] if images else 0,
+        "chunk_height": images[0].size[1] if images else 0,
+        "num_tiles": len(saved_tiles),
+        "num_chunks": len(chunks_info),
+        "chunks": chunks_info,
+    }
+    with open(tile_dir / "chunks.json", "w") as f:
+        json.dump(chunks_manifest, f)
 
     logger.info("PDF rendered: %d pages → %s", len(saved_tiles), tile_dir)
     return [tile_dir]

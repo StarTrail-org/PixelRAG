@@ -28,6 +28,16 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import TypedDict
+
+
+class SplitStats(TypedDict):
+    split: str
+    total: int
+    gold_in_top1: int
+    gold_in_top3: int
+    gold_in_top6: int
+    gold_miss: int
 
 
 def shard_suffix(p: str) -> str:
@@ -40,7 +50,7 @@ def shard_suffix(p: str) -> str:
 
 def search_batch(
     api_url: str, queries: list[str], n_docs: int, timeout: int = 300, retries: int = 5
-) -> list[dict]:
+) -> list[dict[str, object]]:
     payload = {"queries": [{"text": q} for q in queries], "n_docs": n_docs}
     body = json.dumps(payload).encode()
     last_err = None
@@ -72,7 +82,7 @@ def process_split(
     api_url: str,
     batch_size: int,
     n_docs: int,
-) -> dict:
+) -> SplitStats:
     # Resume: count existing lines
     existing = 0
     if out_path.exists():
@@ -185,7 +195,7 @@ def process_split(
     }
 
 
-def _collect_stats(path: Path) -> dict:
+def _collect_stats(path: Path) -> SplitStats:
     gold_in_topk = {1: 0, 3: 0, 6: 0}
     gold_miss = 0
     n = 0
@@ -211,7 +221,7 @@ def _collect_stats(path: Path) -> dict:
     }
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--dataset-dir",

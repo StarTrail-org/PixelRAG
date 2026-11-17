@@ -18,7 +18,7 @@ const nextConfig: NextConfig = {
     // take precedence over this rewrite. Uses the public host so it works on
     // Vercel (localhost only exists in local dev).
     const searchBackend =
-      process.env.PIXELRAG_SEARCH_PROXY || "http://api.pixelrag.ai:30001";
+      process.env.PIXELRAG_SEARCH_PROXY || "https://api.pixelrag.ai";
     return [
       {
         source: "/api/:path*",

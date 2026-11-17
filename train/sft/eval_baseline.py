@@ -20,11 +20,35 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TypedDict
 
 import torch
 from tqdm import tqdm
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
+
+
+class EvalResult(TypedDict, total=False):
+    query: str
+    golden: str
+    predicted: str
+    chunk_path: str
+    image_missing: bool
+    n_images: int
+    judge_grade: str
+    judge_correct: bool
+
+
+class EMCharMetrics(TypedDict):
+    exact_match: float
+    char_accuracy: float
+    scored: int
+
+
+class JudgeMetrics(TypedDict):
+    llm_judge_accuracy: float
+    llm_judge_correct: int
+    llm_judge_total: int
 
 
 # Reused from train_contrastors.py — SimpleQA-style grader, returns A/B/C.
@@ -49,7 +73,7 @@ C: NOT_ATTEMPTED
 Just return the letters "A", "B", or "C", with no text around it."""
 
 
-def _resolve_image_path(ex: dict, images_root: str) -> str:
+def _resolve_image_path(ex: dict[str, str], images_root: str) -> str:
     """chunk_path is relative to the dataset root (e.g. images/shard_000/...).
     images_root is the directory that contains the `images/` subtree (compressed or original)."""
     rel = ex["chunk_path"]
@@ -59,15 +83,15 @@ def _resolve_image_path(ex: dict, images_root: str) -> str:
 
 
 def run_inference(
-    model,
-    processor,
-    examples,
+    model: Qwen3VLForConditionalGeneration,
+    processor: AutoProcessor,
+    examples: list[dict[str, str]],
     images_root: str,
     device: str,
     desc: str,
     max_new_tokens: int = 128,
     enable_thinking: bool = False,
-):
+) -> list[EvalResult]:
     """Run VQA inference on a list of examples; returns list of (golden, predicted) pairs."""
     results = []
     for ex in tqdm(examples, desc=desc):
@@ -126,7 +150,7 @@ def run_inference(
     return results
 
 
-def compute_em_char(results):
+def compute_em_char(results: list[EvalResult]) -> EMCharMetrics:
     correct_em = 0
     char_correct = 0
     char_total = 0
@@ -150,7 +174,9 @@ def compute_em_char(results):
     }
 
 
-def grade_with_gpt(results, model: str, concurrency: int = 16):
+def grade_with_gpt(
+    results: list[EvalResult], model: str, concurrency: int = 16
+) -> JudgeMetrics:
     """Grade predictions with GPT-4.1. Returns list of (bool correct, raw grade)."""
     from openai import OpenAI
 
@@ -202,7 +228,7 @@ def grade_with_gpt(results, model: str, concurrency: int = 16):
     }
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct")
     p.add_argument(

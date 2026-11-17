@@ -21,8 +21,9 @@ import time
 import urllib.request
 from dataclasses import dataclass
 
-from .base import article_url, ArticleCapture, TileCapture
-from .connection import WebsocketConnection
+from ..chrome import sandbox_args
+from .base import ArticleCapture, TileCapture, article_url
+from .connection import WebsocketConnection, pick_page_ws_url
 
 TILE_HEIGHT = 8192
 VIEWPORT_WIDTH = 875
@@ -59,9 +60,9 @@ async def _launch_two_tabs(chrome_path: str, port: int, headless_shell: bool = F
 
     args = [chrome_path, f"--remote-debugging-port={port}"]
     if not headless_shell:
-        args.append("--headless")
+        args.append("--headless=new")
     args += [
-        "--no-sandbox",
+        *sandbox_args(),
         "--disable-dev-shm-usage",
         "--enable-gpu-rasterization",
         "--force-gpu-rasterization",
@@ -78,7 +79,7 @@ async def _launch_two_tabs(chrome_path: str, port: int, headless_shell: bool = F
                 f"http://localhost:{port}/json", timeout=3
             ).read()
             targets = json.loads(data)
-            ws_url_a = targets[0]["webSocketDebuggerUrl"]
+            ws_url_a = pick_page_ws_url(targets)
             break
         except Exception:
             if attempt == 9:

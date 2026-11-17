@@ -15,13 +15,14 @@ import asyncio
 import base64
 import json
 import os
-import time
 import subprocess
+import time
 import urllib.request
 from dataclasses import dataclass
 
-from .base import article_url, ArticleCapture, TileCapture
-from .connection import WebsocketConnection
+from ..chrome import sandbox_args
+from .base import ArticleCapture, TileCapture, article_url
+from .connection import WebsocketConnection, pick_page_ws_url
 
 TILE_HEIGHT = 8192
 VIEWPORT_WIDTH = 875
@@ -78,9 +79,9 @@ async def launch_two_tab(
 
     args = [chrome_path, f"--remote-debugging-port={port}"]
     if not headless_shell:
-        args.append("--headless")
+        args.append("--headless=new")
     args += [
-        "--no-sandbox",
+        *sandbox_args(),
         "--disable-dev-shm-usage",
         "--enable-gpu-rasterization",
         "--force-gpu-rasterization",
@@ -102,8 +103,9 @@ async def launch_two_tab(
                 proc.kill()
                 raise ConnectionError(f"Chrome port {port}")
 
+    ws_url_a = pick_page_ws_url(targets)
     ws_a = await websockets.connect(
-        targets[0]["webSocketDebuggerUrl"], open_timeout=10, max_size=50 * 1024 * 1024
+        ws_url_a, open_timeout=10, max_size=50 * 1024 * 1024
     )
     tab_a = WebsocketConnection(ws_a, proc)
 
@@ -118,7 +120,7 @@ async def launch_two_tab(
             break
     if not ws_url_b:
         for t in targets2:
-            if t["webSocketDebuggerUrl"] != targets[0]["webSocketDebuggerUrl"]:
+            if t["webSocketDebuggerUrl"] != ws_url_a:
                 ws_url_b = t["webSocketDebuggerUrl"]
                 break
 

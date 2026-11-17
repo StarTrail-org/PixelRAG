@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { ChevronLeft, ChevronRight, X, ExternalLink } from "lucide-react"
+import { ChevronLeft, ChevronRight, X, ExternalLink, ArrowLeft } from "lucide-react"
 import { tileUrl } from "@/lib/api"
 import type { Hit } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -111,17 +111,34 @@ export function Lightbox({ hit, allHits, onClose, onNavigate }: LightboxProps) {
           onClick={(e) => e.stopPropagation()}
         >
           {/* Image area */}
-          <div
-            ref={imageAreaRef}
-            className="flex flex-1 items-center justify-center overflow-hidden"
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            style={{ cursor: isDragging ? "grabbing" : "grab" }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+          <div className="relative flex flex-1 flex-col">
+            {/* Back button bar — prominent, always visible */}
+            <div className="absolute left-0 right-0 top-0 z-20 flex items-center justify-between px-4 py-3" style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, transparent 100%)" }}>
+              <button
+                onClick={onClose}
+                className="flex items-center gap-2 rounded-lg bg-white/10 px-3 py-1.5 text-sm font-medium text-white backdrop-blur-sm transition-colors hover:bg-white/20"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </button>
+              <button
+                onClick={onClose}
+                className="rounded-lg p-1.5 text-white/70 backdrop-blur-sm transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div
+              ref={imageAreaRef}
+              className="flex flex-1 items-center justify-center overflow-hidden"
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              style={{ cursor: isDragging ? "grabbing" : "grab" }}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
               src={tileUrl(hit)}
               alt={`Tile ${hit.tile_index}`}
               className="max-h-[90vh] max-w-full select-none"
@@ -130,6 +147,7 @@ export function Lightbox({ hit, allHits, onClose, onNavigate }: LightboxProps) {
                 transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
               }}
             />
+          </div>
           </div>
 
           {/* Metadata sidebar */}

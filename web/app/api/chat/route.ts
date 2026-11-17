@@ -6,8 +6,21 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod"
 
+import {
+  RETRIEVAL_OK,
+  RETRIEVAL_BACKEND_DOWN,
+  classifyStatus,
+  classifyThrow,
+  createRetrievalHealth,
+  recordRetrieval,
+  isUngrounded,
+  backendDownInstruction,
+  UNGROUNDED_CLIENT_MESSAGE,
+  type RetrievalHealth,
+} from "@/lib/retrieval-health.mjs"
+
 const SEARCH_URL =
-  process.env.PIXELRAG_SEARCH_URL || "http://localhost:30001"
+  process.env.PIXELRAG_SEARCH_URL || "https://api.pixelrag.ai"
 
 interface SearchHit {
   score: number
@@ -31,7 +44,7 @@ For every user question, without exception:
 2. Call pixelrag_tile to VIEW the screenshot tiles of the top results — this is how you read and compare. View at least 2-3 tiles.
 3. Answer from what the tiles show, and cite the Wikipedia URLs. If the tiles don't contain the answer, say so honestly.
 
-Be decisive and efficient: for open-ended or comparison questions, check a few strong candidates (about 3-5), then commit to your best answer from what you have seen — do not keep searching indefinitely.
+Be decisive and efficient: view at most 4 tiles total across 1-2 articles, then commit to your best answer. If tiles are too small or blurry to read, say so and answer from the article titles/URLs. Do NOT keep retrying with different tiles or fall back to web search/fetch — you only have pixelrag_search and pixelrag_tile. Stop after 2 tile attempts that yield no readable text.
 
 Never skip search and tile — including for visual or comparison questions; always look at Wikipedia tiles first, even when you think you already know the answer.
 
@@ -41,9 +54,35 @@ function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+// An unreachable index is not information for the model to work around: it
+// ends the turn. Recorded on the turn's health so the stream can close as
+// degraded instead of done.
+function retrievalDown(
+  health: RetrievalHealth,
+  onEvent: (event: string, data: unknown) => void,
+  label: string,
+  detail: string
+) {
+  recordRetrieval(health, RETRIEVAL_BACKEND_DOWN, detail)
+  onEvent("search_unavailable", { query: label, reason: detail })
+  return {
+    content: [{ type: "text" as const, text: backendDownInstruction(detail) }],
+    isError: true,
+  }
+}
+
+function safeDecodeURIComponent(str: string): string {
+  try {
+    return decodeURIComponent(str)
+  } catch {
+    return str
+  }
+}
+
 function createTools(
   onEvent: (event: string, data: unknown) => void,
-  uploadedImage: string | null
+  uploadedImage: string | null,
+  health: RetrievalHealth
 ) {
   const searchTool = tool(
     "pixelrag_search",
@@ -97,16 +136,27 @@ function createTools(
           : args.query || "uploaded image"
       onEvent("searching", { query: label })
 
-      const resp = await fetch(`${SEARCH_URL}/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          queries: [queryObj],
-          n_docs: args.n_results ?? 5,
-          articles_only: true,
-        }),
-      })
-      if (!resp.ok) {
+      let resp: Response
+      try {
+        resp = await fetch(`${SEARCH_URL}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Source": "chat" },
+          body: JSON.stringify({
+            queries: [queryObj],
+            n_docs: args.n_results ?? 5,
+            articles_only: true,
+          }),
+          signal: AbortSignal.timeout(30000),
+        })
+      } catch (err) {
+        return retrievalDown(health, onEvent, label, String(err))
+      }
+      const outcome = classifyStatus(resp.status)
+      if (outcome === RETRIEVAL_BACKEND_DOWN) {
+        return retrievalDown(health, onEvent, label, `HTTP ${resp.status}`)
+      }
+      if (outcome !== RETRIEVAL_OK) {
+        recordRetrieval(health, outcome, `HTTP ${resp.status}`)
         return {
           content: [
             {
@@ -116,6 +166,7 @@ function createTools(
           ],
         }
       }
+      recordRetrieval(health, RETRIEVAL_OK)
       const data = await resp.json()
       const hits: SearchHit[] = data.results?.[0]?.hits ?? []
       const results = hits.map((h: SearchHit) => {
@@ -123,7 +174,7 @@ function createTools(
           ? h.url.split("/wiki/").pop()
           : h.url
         return {
-          title: decodeURIComponent(slug || "").replace(/_/g, " "),
+          title: safeDecodeURIComponent(slug || "").replace(/_/g, " "),
           url: h.url.startsWith("http")
             ? h.url
             : `https://en.wikipedia.org/wiki/${slug}`,
@@ -164,7 +215,7 @@ function createTools(
       const tileUrl = `${SEARCH_URL}/tile/${args.article_id}/${args.tile_index}/${args.chunk_index}`
 
       try {
-        const resp = await fetch(tileUrl)
+        const resp = await fetch(tileUrl, { signal: AbortSignal.timeout(30000) })
         // Only surface successfully fetched tiles — the agent pages through
         // articles by guessing chunk coordinates, so 404s are normal.
         if (resp.ok) {
@@ -175,6 +226,9 @@ function createTools(
           })
         }
         if (!resp.ok) {
+          if (classifyStatus(resp.status) === RETRIEVAL_BACKEND_DOWN) {
+            recordRetrieval(health, RETRIEVAL_BACKEND_DOWN, `tile HTTP ${resp.status}`)
+          }
           return {
             content: [
               {
@@ -199,6 +253,7 @@ function createTools(
           ],
         }
       } catch (err) {
+        recordRetrieval(health, classifyThrow(err), `tile ${err}`)
         return {
           content: [
             {
@@ -297,15 +352,16 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(sseEvent(event, data)))
       }
 
-      const tools = createTools(send, uploadedImage)
+      const health = createRetrievalHealth()
+      const tools = createTools(send, uploadedImage, health)
       const mcpServer = createSdkMcpServer({
         name: "pixelrag",
         version: "1.0.0",
         tools,
       })
 
+      let sentText = false
       try {
-        let sentText = false
         for await (const message of query({
           prompt,
           options: {
@@ -315,7 +371,7 @@ export async function POST(req: Request) {
               "mcp__pixelrag__pixelrag_search",
               "mcp__pixelrag__pixelrag_tile",
             ],
-            maxTurns: 20,
+            maxTurns: parseInt(process.env.CHAT_MAX_TURNS || "12", 10),
             maxBudgetUsd: parseFloat(
               process.env.CHAT_MAX_BUDGET_USD || "0.50"
             ),
@@ -350,9 +406,27 @@ export async function POST(req: Request) {
           }
         }
 
-        send("done", {})
+        if (isUngrounded(health)) {
+          send("error", { message: UNGROUNDED_CLIENT_MESSAGE })
+          send("done", { degraded: true })
+        } else {
+          send("done", {})
+        }
       } catch (err) {
-        send("error", { message: String(err) })
+        const detail = String(err)
+        // Hitting the turn cap is not a failed turn — the model has usually
+        // read real tiles by then, and discarding that to emit a raw SDK error
+        // string throws away work the user already waited for.
+        if (/Reached maximum number of turns/i.test(detail)) {
+          if (!sentText) {
+            send("text", {
+              text: "I ran out of steps before I could finish reading the Wikipedia tiles for this one. A narrower or more specific question usually gets there.",
+            })
+          }
+          send("done", { truncated: true })
+        } else {
+          send("error", { message: detail })
+        }
       } finally {
         controller.close()
       }

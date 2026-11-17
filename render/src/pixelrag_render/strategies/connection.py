@@ -9,12 +9,28 @@ import signal
 import subprocess
 import urllib.request
 
+from ..chrome import sandbox_args
+
 CHROME_ARGS = [
-    "--no-sandbox",
+    *sandbox_args(),
     "--disable-dev-shm-usage",
     "--enable-gpu-rasterization",
     "--force-gpu-rasterization",
 ]
+
+
+def pick_page_ws_url(targets: list[dict]) -> str:
+    """Return the webSocketDebuggerUrl for a ``type: page`` target.
+
+    Chrome's ``/json`` endpoint may list ``background_page`` targets (from
+    built-in extensions like Cast / Media Router) before real page targets.
+    Connecting to a ``background_page`` hangs because it ignores
+    ``Page.navigate``.  Filter for ``type == "page"`` first; fall back to
+    the unfiltered list so pre-existing behaviour is preserved when Chrome
+    reports no page targets at all.
+    """
+    pages = [t for t in targets if t.get("type") == "page"] or targets
+    return pages[0]["webSocketDebuggerUrl"]
 
 
 class WebsocketConnection:
@@ -189,7 +205,7 @@ async def launch_websocket(
 
     args = [chrome_path, f"--remote-debugging-port={port}"]
     if not headless_shell:
-        args.append("--headless")
+        args.append("--headless=new")
     args += CHROME_ARGS
     if extra_args:
         args += extra_args
@@ -220,7 +236,7 @@ async def launch_websocket(
             ).read()
             targets = json.loads(data)
             ws = await websockets.connect(
-                targets[0]["webSocketDebuggerUrl"],
+                pick_page_ws_url(targets),
                 open_timeout=10,
                 max_size=50 * 1024 * 1024,
             )

@@ -29,9 +29,26 @@ import random
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TypedDict
 
 from PIL import Image
 from tqdm import tqdm
+
+
+class RetrievalHit(TypedDict):
+    path: str
+    score: float | None
+    article_id: int | None
+    url: str | None
+
+
+class RetrievalRow(TypedDict):
+    query: str
+    answer: str
+    gold_path_rel: str
+    gold_suffix: str
+    hits: list[RetrievalHit]
+    gold_in_top6_pos: int
 
 
 def shard_suffix(p: str) -> str:
@@ -58,7 +75,9 @@ def compress_image(src: str, dst: str, scale_factor: float) -> bool:
         return False
 
 
-def build_image_set(row: dict, seed_base: int, n_images: int) -> tuple[list[str], int]:
+def build_image_set(
+    row: RetrievalRow, seed_base: int, n_images: int
+) -> tuple[list[str], int]:
     """Return (list of n_images shard-suffixes, gold index) with gold position shuffled.
     Composition: gold + (n_images-1) non-gold hits from top-6."""
     gold = row["gold_suffix"]
@@ -75,7 +94,7 @@ def build_image_set(row: dict, seed_base: int, n_images: int) -> tuple[list[str]
     return shuffled, gold_pos
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--retrieval-dir",
@@ -128,8 +147,8 @@ def main():
     print(f"Splits:  {args.splits}")
 
     # Pass 1: gather unique suffixes that need compression across all splits
-    all_split_rows = {}
-    needed = set()
+    all_split_rows: dict[str, list[RetrievalRow]] = {}
+    needed: set[str] = set()
     for split in args.splits:
         p_in = retrieval_dir / f"{split}.jsonl"
         if not p_in.exists():

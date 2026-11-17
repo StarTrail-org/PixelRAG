@@ -16,11 +16,37 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TypedDict
 
 import torch
 from tqdm import tqdm
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
+
+
+class EvalResult(TypedDict, total=False):
+    query: str
+    golden: str
+    predicted: str
+    image_missing: bool
+    missing_paths: list[str]
+    n_images: int
+    gold_pos: int | None
+    gold_in_top6_pos: int | None
+    judge_grade: str
+    judge_correct: bool
+
+
+class EMCharMetrics(TypedDict):
+    exact_match: float
+    char_accuracy: float
+    scored: int
+
+
+class JudgeMetrics(TypedDict):
+    llm_judge_accuracy: float
+    llm_judge_correct: int
+    llm_judge_total: int
 
 
 _GRADER_TEMPLATE = """Your job is to look at a question, a gold target, and a predicted answer, and then assign a grade of either ["CORRECT", "INCORRECT", "NOT_ATTEMPTED"].
@@ -49,8 +75,14 @@ def strip_image_tokens(s: str) -> str:
 
 
 def run_inference(
-    model, processor, examples, device, desc, max_new_tokens=128, enable_thinking=False
-):
+    model: Qwen3VLForConditionalGeneration,
+    processor: AutoProcessor,
+    examples: list[dict[str, object]],
+    device: str,
+    desc: str,
+    max_new_tokens: int = 128,
+    enable_thinking: bool = False,
+) -> list[EvalResult]:
     results = []
     for ex in tqdm(examples, desc=desc):
         images = ex.get("images", [])
@@ -112,7 +144,7 @@ def run_inference(
     return results
 
 
-def compute_em_char(results):
+def compute_em_char(results: list[EvalResult]) -> EMCharMetrics:
     correct_em = 0
     char_correct = 0
     char_total = 0
@@ -136,7 +168,9 @@ def compute_em_char(results):
     }
 
 
-def grade_with_gpt(results, model: str, concurrency: int = 16):
+def grade_with_gpt(
+    results: list[EvalResult], model: str, concurrency: int = 16
+) -> JudgeMetrics:
     from openai import OpenAI
 
     client = OpenAI()
@@ -186,7 +220,7 @@ def grade_with_gpt(results, model: str, concurrency: int = 16):
     }
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct")
     p.add_argument("--adapter", default=None)

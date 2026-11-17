@@ -29,7 +29,9 @@ Correct answer: {answer}
 Write a brief reasoning trace (2-3 sentences) showing how someone would find this answer by examining the screenshot. Mention what specific text/detail they would look for. Be natural and concise. No preamble. Output ONLY the reasoning, nothing else."""
 
 
-def process_one(client, model, ex):
+def process_one(
+    client: OpenAI, model: str, ex: dict[str, str]
+) -> dict[str, str | None]:
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -48,7 +50,7 @@ def process_one(client, model, ex):
         return {**ex, "reasoning": None, "_error": str(e)[:200]}
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
