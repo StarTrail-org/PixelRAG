@@ -719,7 +719,9 @@ async def tile(path: str):
     """Serve a tile image by its local path (legacy, use /tile/{article_id}/{tile_index}/{chunk_index} instead)."""
     tiles_dir = _state.get("tiles_dir", "./tiles")
     resolved = os.path.realpath(path)
-    if not resolved.startswith(os.path.realpath(tiles_dir)):
+    # Compare whole path components: a plain string-prefix check would let a
+    # sibling such as "<tiles_dir>_private" through.
+    if not Path(resolved).is_relative_to(os.path.realpath(tiles_dir)):
         raise HTTPException(status_code=403, detail="Path not under tiles directory")
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
@@ -870,13 +872,7 @@ def load(args):
     if getattr(args, "render_on_demand", False):
         from .render_ondemand import OnDemandTiles
 
-        book = args.zim_book or _derive_kiwix_book(args.kiwix_url)
-        if not book:
-            logger.warning(
-                "render-on-demand: could not derive kiwix book from %s "
-                "(pass --zim-book)",
-                args.kiwix_url,
-            )
+        book = _require_kiwix_book(args)
         cache = os.path.join(args.tiles_dir or "./tiles_cache", "_ondemand")
         _state["ondemand"] = OnDemandTiles(args.kiwix_url, book, cache)
         logger.info(
@@ -888,7 +884,12 @@ def load(args):
 
 
 def _derive_kiwix_book(kiwix_url: str) -> str:
-    """Read the kiwix-serve catalog and return the /content/<book> id."""
+    """Read the kiwix-serve catalog and return the /content/<book> id, or "".
+
+    Only kiwix-serve publishes this catalog. The bundled ``zim_server`` and
+    ``zim_server_async`` answer every path out of the ZIM itself, so the
+    request 404s there and the id has to come from --zim-book.
+    """
     import re
     import urllib.request
 
@@ -898,9 +899,36 @@ def _derive_kiwix_book(kiwix_url: str) -> str:
         ) as r:
             xml = r.read().decode()
         m = re.search(r'href="/content/([^"/]+)"', xml)
-        return m.group(1) if m else ""
-    except Exception:
-        return ""
+        if m:
+            return m.group(1)
+        logger.warning(
+            "render-on-demand: no /content/<book> in the catalog at %s", kiwix_url
+        )
+    except Exception as e:
+        # Unreachable host, 404 (not kiwix-serve), timeout, undecodable body:
+        # report which, so this is distinguishable from an empty catalog.
+        logger.warning("render-on-demand: catalog at %s unreadable: %s", kiwix_url, e)
+    return ""
+
+
+def _require_kiwix_book(args) -> str:
+    """The /content/<book> id for on-demand renders, or exit saying how to set it.
+
+    Without an id every render requests ``/content//<title>`` and publishes
+    whatever that returns — a 404 body renders and chunks like any other short
+    page — as the article's tiles, cached for every later hit. The id is not
+    optional, so a run that cannot determine one has to stop at startup rather
+    than report a feature that cannot address any content as enabled.
+    """
+    book = args.zim_book or _derive_kiwix_book(args.kiwix_url)
+    if not book:
+        raise SystemExit(
+            f"render-on-demand: no kiwix book id for {args.kiwix_url} — pass "
+            "--zim-book. It is auto-derived from /catalog/v2/entries, which "
+            "only kiwix-serve publishes (see the warning above for why this "
+            "one could not be read)."
+        )
+    return book
 
 
 def _ondemand_chunk_b64(
@@ -933,11 +961,15 @@ def main():
         "--index-dir", default=os.environ.get("PIXELRAG_INDEX_DIR", "./index")
     )
     parser.add_argument(
-        "--tiles-dir", default=os.environ.get("PIXELRAG_TILES_DIR", "./tiles")
+        "--tiles-dir",
+        default=os.environ.get("PIXELRAG_TILES_DIR"),
+        help="Tiles directory (default: <index-dir>/tiles if it exists, else ./tiles)",
     )
     parser.add_argument(
         "--articles-json",
-        default=os.environ.get("PIXELRAG_ARTICLES_JSON", "./articles.json"),
+        default=os.environ.get("PIXELRAG_ARTICLES_JSON"),
+        help="Articles file (default: <index-dir>/articles.json if it exists, "
+        "else ./articles.json)",
     )
     parser.add_argument(
         "--backend",
@@ -993,6 +1025,15 @@ def main():
         help="kiwix book id for /content/<book>/ (auto-derived from --kiwix-url if omitted)",
     )
     args = parser.parse_args()
+    # `pixelrag index build` writes both next to the index, so look there first.
+    if args.articles_json is None:
+        candidate = os.path.join(args.index_dir, "articles.json")
+        args.articles_json = (
+            candidate if os.path.exists(candidate) else "./articles.json"
+        )
+    if args.tiles_dir is None:
+        candidate = os.path.join(args.index_dir, "tiles")
+        args.tiles_dir = candidate if os.path.isdir(candidate) else "./tiles"
     if args.qdrant_client_config:
         with open(args.qdrant_client_config) as f:
             args.qdrant_client_config = json.load(f)

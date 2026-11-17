@@ -19,9 +19,9 @@ from pathlib import Path
 from typing import TypedDict
 
 import torch
-from tqdm import tqdm
-from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
+from tqdm import tqdm
+from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
 
 class EvalResult(TypedDict, total=False):

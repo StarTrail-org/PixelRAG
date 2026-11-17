@@ -9,7 +9,6 @@ import shutil
 import tarfile
 from pathlib import Path
 
-
 DEFAULT_SOURCE_DIR = Path(
     "/home/user/wiki-screenshot-training/hf_dataset_export/screenshot-training"
 )

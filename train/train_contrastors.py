@@ -18,19 +18,19 @@ Resume:
 import argparse
 import datetime
 import functools
+import io
 import json
 import logging
 import os
 import signal
-import io
 import sys
 import time
 import urllib.parse
-from urllib.parse import unquote
-from pathlib import Path
 from contextlib import nullcontext
+from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import unquote
 
 import numpy as np
 import torch
@@ -194,9 +194,10 @@ def siglip_loss(query, document, logit_scale, gather_enabled=False, hardness_alp
     target.scatter_(1, pos_indices.unsqueeze(1).long(), 1.0)
 
     # SigLIP loss: -log_sigmoid(target * similarity) averaged over all pairs
+    # No world_size scaling: gather_with_grad's backward already sums every rank's
+    # gradient into the rank that owns each document, and the AVG all-reduce then
+    # gives the gradient of the global-batch loss.
     loss = -F.logsigmoid(target * similarity).sum() / num_queries
-    if gather_enabled and dist.is_initialized():
-        loss = loss * dist.get_world_size()
 
     # Accuracy: check if positive has highest similarity
     accuracy = (similarity.argmax(dim=1) == pos_indices).float().mean()
@@ -237,7 +238,7 @@ def clip_loss(
 
     similarity = logit_scale(torch.matmul(query, document.T))
 
-    # Rank offset and world_size scaling only apply when documents are gathered
+    # The rank offset only applies when documents are gathered
     # across ranks. Without gather, each rank evaluates independently (local labels).
     if gather_enabled and dist.is_initialized():
         rank = dist.get_rank()
@@ -262,9 +263,8 @@ def clip_loss(
         neg_mask.scatter_(1, labels.unsqueeze(1), False)
         similarity = similarity + hardness_alpha * raw_sim * neg_mask
 
+    # No world_size scaling; see siglip_loss.
     loss = F.cross_entropy(similarity, labels, label_smoothing=label_smoothing)
-    if gather_enabled and dist.is_initialized():
-        loss = loss * dist.get_world_size()
 
     # accuracy for logging
     accuracy = (similarity.argmax(dim=1) == labels).float().mean()
@@ -786,9 +786,9 @@ def init_chat_templates(processor):
     dt_idx = dt_text.index("PLACEHOLDER")
     _DOC_TEXT_PREFIX = dt_text[:dt_idx]
     _DOC_TEXT_SUFFIX = dt_text[dt_idx + len("PLACEHOLDER") :]
-    logger.info(f"Query prefix: {repr(_QUERY_PREFIX)}")
-    logger.info(f"Doc image template: {repr(_DOC_IMAGE_TMPL[:80])}...")
-    logger.info(f"Doc text prefix: {repr(_DOC_TEXT_PREFIX)}")
+    logger.info(f"Query prefix: {_QUERY_PREFIX!r}")
+    logger.info(f"Doc image template: {_DOC_IMAGE_TMPL[:80]!r}...")
+    logger.info(f"Doc text prefix: {_DOC_TEXT_PREFIX!r}")
 
 
 def process_queries(processor, queries):
@@ -834,8 +834,7 @@ def make_text_collate_fn(processor, num_hard_negatives=0):
         for item in batch:
             doc_texts.append(item[1])  # positive passage
             neg_texts = item[2] if len(item) > 2 else []
-            for nt in neg_texts:
-                doc_texts.append(nt)
+            doc_texts.extend(neg_texts)
 
         query_inputs = process_queries(processor, list(queries))
         doc_inputs = process_doc_texts(processor, doc_texts)
@@ -1494,8 +1493,8 @@ def run_miniv6_eval(
     Args:
         output_path: If set, save per-example results as JSONL.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     import re
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     raw = model.module if hasattr(model, "module") else model
     raw.eval()
@@ -1745,8 +1744,10 @@ def run_miniv6_eval(
     if output_path:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         with open(output_path, "w") as f:
-            for item in per_example_results:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            f.writelines(
+                json.dumps(item, ensure_ascii=False) + "\n"
+                for item in per_example_results
+            )
         logger.info(f"  Saved {len(per_example_results)} eval results to {output_path}")
 
     logger.info(f"  [profile] eval total: {time.time() - t_eval_start:.1f}s")
@@ -3191,6 +3192,7 @@ def main():
                     query_process_fn=forward_query,
                     doc_process_fn=forward_doc,
                     hardness_alpha=args.hardness_alpha,
+                    loss_fn=active_loss_fn,
                 )
             debug_trace(trace_enabled, "train_loop: backward path returned")
             t_fwdbwd = time.time()
