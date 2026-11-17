@@ -194,9 +194,10 @@ def siglip_loss(query, document, logit_scale, gather_enabled=False, hardness_alp
     target.scatter_(1, pos_indices.unsqueeze(1).long(), 1.0)
 
     # SigLIP loss: -log_sigmoid(target * similarity) averaged over all pairs
+    # No world_size scaling: gather_with_grad's backward already sums every rank's
+    # gradient into the rank that owns each document, and the AVG all-reduce then
+    # gives the gradient of the global-batch loss.
     loss = -F.logsigmoid(target * similarity).sum() / num_queries
-    if gather_enabled and dist.is_initialized():
-        loss = loss * dist.get_world_size()
 
     # Accuracy: check if positive has highest similarity
     accuracy = (similarity.argmax(dim=1) == pos_indices).float().mean()
@@ -237,7 +238,7 @@ def clip_loss(
 
     similarity = logit_scale(torch.matmul(query, document.T))
 
-    # Rank offset and world_size scaling only apply when documents are gathered
+    # The rank offset only applies when documents are gathered
     # across ranks. Without gather, each rank evaluates independently (local labels).
     if gather_enabled and dist.is_initialized():
         rank = dist.get_rank()
@@ -262,9 +263,8 @@ def clip_loss(
         neg_mask.scatter_(1, labels.unsqueeze(1), False)
         similarity = similarity + hardness_alpha * raw_sim * neg_mask
 
+    # No world_size scaling; see siglip_loss.
     loss = F.cross_entropy(similarity, labels, label_smoothing=label_smoothing)
-    if gather_enabled and dist.is_initialized():
-        loss = loss * dist.get_world_size()
 
     # accuracy for logging
     accuracy = (similarity.argmax(dim=1) == labels).float().mean()
