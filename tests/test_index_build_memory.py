@@ -94,25 +94,37 @@ def test_metadata_order_and_neighbor_alignment(shards, tmp_path, pq_m, metric):
         np.testing.assert_array_equal(ids, exact.search(queries, 5)[1])
 
 
-def test_legacy_collisions_overflow_and_first_wins_are_preserved(tmp_path):
+def test_current_tuple_identity_and_first_wins_are_preserved(tmp_path):
     source = tmp_path / "shards"
     source.mkdir()
-    # (1,10000,0) collides with (2,0,0); (3,0,10000) with (3,1,0).
-    # Large article IDs exercise the current int64 arithmetic overflow too.
+    # These three distinct pairs collided under the old fixed-decimal key:
+    # (1,10000,0)/(2,0,0), (3,0,10000)/(3,1,0), and
+    # (2,-1,0)/(1,9999,0). A repeated tuple in shard 1 must keep its first row.
+    identities = [
+        (1, 10000, 0),
+        (2, 0, 0),
+        (3, 0, 10000),
+        (3, 1, 0),
+        (2, -1, 0),
+        (1, 9999, 0),
+    ]
     for shard in range(2):
+        rows = identities if shard == 0 else [*identities, identities[0]]
         np.savez_compressed(
             source / f"shard_{shard}.npz",
-            embeddings=np.arange(24, dtype=np.float32).reshape(6, 4) + shard,
-            article_ids=np.array([1, 2, 3, 3, 2**62, 2**62], dtype=np.int64),
-            tile_indices=np.array([10000, 0, 0, 1, 0, 0], dtype=np.int32),
-            chunk_indices=np.array([0, 0, 10000, 0, 0, 0], dtype=np.int32),
-            y_offsets=np.arange(6, dtype=np.int32) + shard * 100,
-            tile_heights=np.full(6, 100 + shard, dtype=np.int32),
+            embeddings=np.arange(len(rows) * 4, dtype=np.float32).reshape(-1, 4)
+            + shard * 100,
+            article_ids=np.array([row[0] for row in rows], dtype=np.int64),
+            tile_indices=np.array([row[1] for row in rows], dtype=np.int32),
+            chunk_indices=np.array([row[2] for row in rows], dtype=np.int32),
+            y_offsets=np.arange(len(rows), dtype=np.int32) + shard * 100,
+            tile_heights=np.full(len(rows), 100 + shard, dtype=np.int32),
         )
     expected = _merge_all_shards(sorted(source.glob("*.npz")))
     build_streaming_ivf(source, tmp_path / "out", nlist=1, train_sample=3)
     index = faiss.read_index(str(tmp_path / "out/index.faiss"))
     index.make_direct_map()
+    assert index.ntotal == len(identities)
     with np.load(tmp_path / "out/metadata.npz") as actual:
         for name in FIELDS:
             np.testing.assert_array_equal(actual[name], expected[name])
@@ -120,6 +132,25 @@ def test_legacy_collisions_overflow_and_first_wins_are_preserved(tmp_path):
         np.testing.assert_array_equal(
             index.reconstruct(row), expected["embeddings"][row]
         )
+
+
+def test_current_int64_key_range_limit_is_preserved(tmp_path):
+    source = tmp_path / "shards"
+    source.mkdir()
+    np.savez_compressed(
+        source / "shard_000000.npz",
+        embeddings=np.arange(8, dtype=np.float32).reshape(2, 4),
+        article_ids=np.array([0, 2**62], dtype=np.int64),
+        tile_indices=np.array([0, 10000], dtype=np.int32),
+        chunk_indices=np.array([0, 0], dtype=np.int32),
+        y_offsets=np.arange(2, dtype=np.int32),
+        tile_heights=np.full(2, 100, dtype=np.int32),
+    )
+    with pytest.raises(ValueError, match="ranges are too wide to pack"):
+        _merge_all_shards(sorted(source.glob("*.npz")))
+    with pytest.raises(ValueError, match="ranges are too wide to pack"):
+        build_streaming_ivf(source, tmp_path / "out", nlist=1, train_sample=2)
+    assert not (tmp_path / "out").exists()
 
 
 def test_write_failure_does_not_publish_partial_output(shards, tmp_path, monkeypatch):

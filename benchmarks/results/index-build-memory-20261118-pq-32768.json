@@ -1,0 +1,142 @@
+{
+  "configuration": {
+    "work_dir": "/tmp/pixelrag-index-build-memory-20261118-pq-32768",
+    "rows": 32768,
+    "dim": 256,
+    "shard_rows": 4096,
+    "train_sample": 8192,
+    "batch_size": 1024,
+    "nlist": 64,
+    "nprobe": 8,
+    "pq_m": 16,
+    "threads": 1,
+    "seed": 2026,
+    "repeats": 3,
+    "worker": null,
+    "output": null
+  },
+  "platform": "macOS-26.5.1-arm64-arm-64bit",
+  "python": "3.12.13 (main, Mar  3 2026, 12:39:30) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "numpy": "2.4.5",
+  "faiss": "1.14.2",
+  "cpu_count": 10,
+  "runs": [
+    {
+      "metrics": {
+        "legacy": {
+          "builder": "legacy",
+          "build_wall_seconds": 0.2881904579990078,
+          "peak_rss_raw": 173948928,
+          "peak_rss_os_unit": "bytes",
+          "peak_rss_mib": 165.890625,
+          "index_bytes": 580692,
+          "metadata_bytes": 748416,
+          "total_output_bytes": 1329468
+        },
+        "prototype": {
+          "builder": "prototype",
+          "build_wall_seconds": 0.2944977500010282,
+          "peak_rss_raw": 79101952,
+          "peak_rss_os_unit": "bytes",
+          "peak_rss_mib": 75.4375,
+          "index_bytes": 580692,
+          "metadata_bytes": 748416,
+          "total_output_bytes": 1329539
+        }
+      },
+      "validation": {
+        "legacy": {
+          "vector_count": 31130,
+          "metadata_alignment": "all five arrays and dtypes equal legacy merge",
+          "ann_overlap_at_10_with_exact": 0.00859375,
+          "all_lists_overlap_at_10_with_exact": 0.00859375
+        },
+        "prototype": {
+          "vector_count": 31130,
+          "metadata_alignment": "all five arrays and dtypes equal legacy merge",
+          "ann_overlap_at_10_with_exact": 0.00546875,
+          "all_lists_overlap_at_10_with_exact": 0.00546875
+        },
+        "between_builders_ann_overlap_at_10": 0.0
+      }
+    },
+    {
+      "metrics": {
+        "prototype": {
+          "builder": "prototype",
+          "build_wall_seconds": 0.28643008299695794,
+          "peak_rss_raw": 79151104,
+          "peak_rss_os_unit": "bytes",
+          "peak_rss_mib": 75.484375,
+          "index_bytes": 580692,
+          "metadata_bytes": 748416,
+          "total_output_bytes": 1329539
+        },
+        "legacy": {
+          "builder": "legacy",
+          "build_wall_seconds": 0.29893383300805,
+          "peak_rss_raw": 173916160,
+          "peak_rss_os_unit": "bytes",
+          "peak_rss_mib": 165.859375,
+          "index_bytes": 580692,
+          "metadata_bytes": 748416,
+          "total_output_bytes": 1329468
+        }
+      },
+      "validation": {
+        "prototype": {
+          "vector_count": 31130,
+          "metadata_alignment": "all five arrays and dtypes equal legacy merge",
+          "ann_overlap_at_10_with_exact": 0.00546875,
+          "all_lists_overlap_at_10_with_exact": 0.00546875
+        },
+        "legacy": {
+          "vector_count": 31130,
+          "metadata_alignment": "all five arrays and dtypes equal legacy merge",
+          "ann_overlap_at_10_with_exact": 0.00859375,
+          "all_lists_overlap_at_10_with_exact": 0.00859375
+        },
+        "between_builders_ann_overlap_at_10": 0.0
+      }
+    },
+    {
+      "metrics": {
+        "legacy": {
+          "builder": "legacy",
+          "build_wall_seconds": 0.2860917499929201,
+          "peak_rss_raw": 174096384,
+          "peak_rss_os_unit": "bytes",
+          "peak_rss_mib": 166.03125,
+          "index_bytes": 580692,
+          "metadata_bytes": 748416,
+          "total_output_bytes": 1329468
+        },
+        "prototype": {
+          "builder": "prototype",
+          "build_wall_seconds": 0.267969708002056,
+          "peak_rss_raw": 78168064,
+          "peak_rss_os_unit": "bytes",
+          "peak_rss_mib": 74.546875,
+          "index_bytes": 580692,
+          "metadata_bytes": 748416,
+          "total_output_bytes": 1329539
+        }
+      },
+      "validation": {
+        "legacy": {
+          "vector_count": 31130,
+          "metadata_alignment": "all five arrays and dtypes equal legacy merge",
+          "ann_overlap_at_10_with_exact": 0.00859375,
+          "all_lists_overlap_at_10_with_exact": 0.00859375
+        },
+        "prototype": {
+          "vector_count": 31130,
+          "metadata_alignment": "all five arrays and dtypes equal legacy merge",
+          "ann_overlap_at_10_with_exact": 0.00546875,
+          "all_lists_overlap_at_10_with_exact": 0.00546875
+        },
+        "between_builders_ann_overlap_at_10": 0.0
+      }
+    }
+  ]
+}

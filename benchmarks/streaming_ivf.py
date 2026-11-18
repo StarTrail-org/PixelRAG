@@ -6,6 +6,7 @@ Input files must be immutable for the duration of the two passes.
 """
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -84,11 +85,13 @@ def build_streaming_ivf(
     pq_m=0,
     pq_nbits=8,
 ):
-    """Two passes: first-wins dedup + reservoir training, then streaming add.
+    """First-wins tuple dedup + reservoir training, then a streaming add pass.
 
-    Retains legacy *packed int64* collisions and overflow, intentionally. This
-    is not the collision fix discussed in PR #140. SQLite stores signed keys;
-    survivor positions are disk files, not a corpus-sized Python set or list.
+    SQLite's composite key implements the same tuple identity as the current
+    production _dedup_keys radix packer without allocating a corpus-sized key
+    array. The full observed ranges are still checked against the production
+    int64-key limit before training. Survivor positions are disk files, not a
+    corpus-sized Python set or list.
     Destination must not exist. Publication is a same-filesystem directory
     rename; concurrent builders targeting the same destination are unsupported.
     """
@@ -114,7 +117,17 @@ def build_streaming_ivf(
         try:
             db.execute("PRAGMA cache_size=-2048")  # 2 MiB page cache
             db.execute("PRAGMA temp_store=FILE")
-            db.execute("CREATE TABLE seen (key INTEGER PRIMARY KEY)")
+            db.execute(
+                "CREATE TABLE seen ("
+                "article_id INTEGER NOT NULL, "
+                "tile_index INTEGER NOT NULL, "
+                "chunk_index INTEGER NOT NULL, "
+                "PRIMARY KEY (article_id, tile_index, chunk_index)"
+                ") WITHOUT ROWID"
+            )
+            identity_fields = ("article_ids", "tile_indices", "chunk_indices")
+            lows = [None] * len(identity_fields)
+            highs = [None] * len(identity_fields)
             for shard_id, path in enumerate(files):
                 vectors, metadata = _read_shard(path, dim)
                 if dim is None:
@@ -122,16 +135,24 @@ def build_streaming_ivf(
                     if pq_m and dim % pq_m:
                         raise ValueError("pq_m must divide dimension evenly")
                     reservoir = np.empty((train_sample, dim), dtype=np.float32)
-                # Match legacy casts before arithmetic, including int64 wrap.
-                keys = (
-                    metadata["article_ids"] * 100_000_000
-                    + metadata["tile_indices"].astype(np.int64) * 10_000
-                    + metadata["chunk_indices"].astype(np.int64)
-                )
+                for field_id, name in enumerate(identity_fields):
+                    values = metadata[name]
+                    if values.size:
+                        low, high = int(values.min()), int(values.max())
+                        lows[field_id] = (
+                            low if lows[field_id] is None else min(lows[field_id], low)
+                        )
+                        highs[field_id] = (
+                            high
+                            if highs[field_id] is None
+                            else max(highs[field_id], high)
+                        )
                 selected = []  # bounded by one shard, not the corpus
-                for row, key in enumerate(keys):
+                identity_arrays = tuple(metadata[name] for name in identity_fields)
+                for row, identity in enumerate(zip(*identity_arrays)):
                     cursor = db.execute(
-                        "INSERT OR IGNORE INTO seen VALUES (?)", (int(key),)
+                        "INSERT OR IGNORE INTO seen VALUES (?, ?, ?)",
+                        tuple(int(value) for value in identity),
                     )
                     if not cursor.rowcount:
                         continue
@@ -145,11 +166,17 @@ def build_streaming_ivf(
                     scratch / f"rows_{shard_id}.npy",
                     np.asarray(selected, dtype=np.int64),
                 )
-                del vectors, metadata, keys, selected
+                del vectors, metadata, identity_arrays, selected
         finally:
             db.close()
         if count == 0:
             raise ValueError("No vectors after deduplication")
+        spans = [high - low + 1 for low, high in zip(lows, highs)]
+        if math.prod(spans) - 1 > np.iinfo(np.int64).max:
+            raise ValueError(
+                "(article_id, tile_index, chunk_index) ranges are too wide to pack "
+                f"into an int64 dedup key: spans {spans}"
+            )
         metric_type = faiss.METRIC_INNER_PRODUCT if metric == "ip" else faiss.METRIC_L2
         quantizer = faiss.IndexFlatIP(dim) if metric == "ip" else faiss.IndexFlatL2(dim)
         nlist = min(nlist, count)

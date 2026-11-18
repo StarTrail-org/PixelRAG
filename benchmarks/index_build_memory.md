@@ -2,20 +2,25 @@
 
 ## Status and scope
 
-Inspected on 2026-10-11 and rechecked on 2026-10-12 at `b4fe76301465eaee3d8ac75e0bec54664e53c072`.
-GitHub's upstream `main` endpoint returned the same SHA. Reviewed open/closed
-PR titles (up to 200 entries), plus PR #140's body and discussion. No newer
-streaming builder was found. [PR #155](https://github.com/StarTrail-org/PixelRAG/pull/155)
-is merged and already provides IVFPQ. [PR #140](https://github.com/StarTrail-org/PixelRAG/pull/140#issuecomment-5461339035)
-is open; its maintainer discussion reports a structured-key dedup slowdown and
-asks for a separate resolution. This prototype deliberately preserves the
-current packed-key collisions and int64 overflow; it does not resolve that PR.
+Originally measured on 2026-10-12 at `b4fe76301465eaee3d8ac75e0bec54664e53c072`.
+Rebased and rechecked on 2026-11-18 against current upstream `main` at
+`94fdad277ed0e64ecc217b935204e704a1d582a5` (40 commits ahead of that baseline).
+Upstream merged [PR #203](https://github.com/StarTrail-org/PixelRAG/pull/203),
+which replaced the old fixed-decimal dedup key with range-derived unique keys
+and rejects ranges that cannot fit in `int64`. This study now implements the
+same tuple identity using SQLite's composite primary key, checks the same range
+limit, and preserves first-wins order. The 2026-10-12 reports are kept as
+historical results; current-head measurements below supersede them.
 
-**Bounded synthetic measurements (2026-10-12).** The focused legacy allocation
-failure was reproduced, 47 prototype/neighboring tests passed, and four benchmark
-configurations completed on the reviewed code using the existing lockfile. No embedding models were downloaded/trained, paid or embedding
-APIs called, or production services touched. Only FAISS index training on local
-generated data was performed. This remains a proposal, not production integration.
+**Rebased synthetic measurements (2026-11-18).** The current production builder
+still allocates the full raw vector matrix before building an IVF index. The
+focused old-prototype failure was reproduced after the upstream rebase, the
+prototype was corrected, 21 focused tests passed, and four benchmark
+configurations completed on the current code using the existing lockfile. No
+embedding models were downloaded/trained, paid or embedding APIs called, or
+production services touched. Only FAISS index training on locally generated
+data was performed. This remains an experimental study, not production
+integration.
 
 Production files, CLI defaults, dependencies and lockfile are unchanged.
 The experiment lives only in `benchmarks/`; tests import real NumPy, FAISS,
@@ -26,7 +31,8 @@ error in the new suite, not a silent skip.
 
 `_merge_all_shards` loads the compressed `.npz` embeddings even during its shape
 scan: `mmap_mode` does not memory-map compressed ZIP members. It then allocates
-an `N_raw × d` float32 matrix, metadata arrays, packed keys and unique positions.
+an `N_raw × d` float32 matrix, metadata arrays, range-derived packed keys and
+unique positions.
 If there are duplicates, advanced indexing allocates another retained-vector
 matrix before the raw matrix can be freed. `build_ivf` trains and adds in
 100,000-row batches *after* this merge. PQ compresses the final index, not those
@@ -40,11 +46,14 @@ the serving process's metadata loading footprint.
 ## Prototype design
 
 1. Sort `shard_*.npz` lexically. Read one shard at a time, casting metadata just
-   as the legacy merge does. Compute the same packed signed int64 key:
-   `article_id * 100_000_000 + tile_index * 10_000 + chunk_index`.
-2. Insert each key into an on-disk SQLite primary-key table with a 2 MiB page
-   cache. Keep only the first occurrence. Save per-shard survivor positions to
-   disk. No corpus-sized Python set or in-memory metadata table is retained.
+   as the legacy merge does. Track global min/max for `article_id`, `tile_index`,
+   and `chunk_index` so the prototype can apply the same `int64` range limit as
+   production's `_dedup_keys`.
+2. Insert each metadata tuple into an on-disk SQLite composite-primary-key table
+   with a 2 MiB page cache. Distinct tuples remain distinct even if they collided
+   under the retired fixed-decimal formula. Keep only the first occurrence and
+   save per-shard survivor positions to disk. No corpus-sized Python set or
+   in-memory metadata table is retained.
 3. In that first pass, reservoir-sample surviving float32 vectors, with a fixed
    seed and a configured maximum sample count. Train the same CPU IVFFlat or
    IVFPQ classes and explicitly retain the requested IP/L2 metric.
@@ -55,9 +64,9 @@ the serving process's metadata loading footprint.
    filesystem. Rename the completed directory into a **new** destination only.
    Exceptions clean temporary output; an existing destination is rejected.
 
-This is a CPU-only experiment, not a reusable backend API. Per-row SQLite and
-reservoir work can be slow. Their CPU and disk costs must be measured before
-considering integration. Reservoir sampling is uniform without replacement,
+This is a CPU-only experiment, not a reusable backend API. Per-row SQLite tuple
+inserts and reservoir work can be slow. Their CPU and disk costs must be measured
+before considering integration. Reservoir sampling is uniform without replacement,
 but uses a different RNG/ordering from legacy `np.random.choice`; identical
 seeds do not imply identical trained centroids or ANN neighbors.
 
@@ -154,12 +163,12 @@ It also reports overlap when all IVF lists are probed (exact for IVFFlat, still
 quantized for PQ). Missing neighbor IDs never count as matches. Validation
 intentionally allocates the complete *bounded fixture* outside measured workers.
 The small pytest fixtures additionally reconstruct every IVFFlat row to verify
-vector/metadata alignment, exercise duplicate keys/collisions/overflow, both
-metrics and PQ, inject a failed index write and shard mutations, verify bounded
+vector/metadata alignment, exercise duplicate keys, former fixed-key collisions,
+the current range limit, both metrics and PQ, inject a failed index write and shard mutations, verify bounded
 repeatable sampling/addition, and load output through the real serving backend
 with normal and memory-mapped indexes.
 
-## Validation record (2026-10-12)
+## Historical validation record (2026-10-12)
 
 | Check | Actual result |
 | --- | --- |
@@ -186,7 +195,7 @@ No missing-import skips were taken. The full browser/ML suite and Linux runs
 were not executed; the selected neighboring suites cover IVF/PQ, serving
 backends, reconstruction and department search.
 
-## Measurements
+## Historical measurements (2026-10-12)
 
 Hardware: Apple M4, 10 logical CPUs, 16 GiB RAM. OS: macOS 26.5.1 arm64.
 Python 3.12.13, NumPy 2.4.5, FAISS 1.14.2. Each builder used one FAISS CPU
@@ -260,16 +269,55 @@ Generated shards, indexes and per-worker logs remain in the four `/tmp` work
 directories listed in the reproduction commands; only small JSON reports are
 included in the repository. Use new work-directory names to rerun.
 
+## Current-head validation and measurements (2026-11-18)
+
+Current upstream: `94fdad277ed0e64ecc217b935204e704a1d582a5`. Rebased the
+isolated study commit onto that SHA. The original focused suite had **19 passed
+and 1 failed**: its old fixture combined extreme article IDs with broad tile
+and chunk ranges, so production correctly raised the new #203 range-limit
+error. The prototype then used the pre-#203 fixed-decimal key. Replaced it with
+an on-disk SQLite composite key, kept the same production `int64` range check,
+and rewrote the fixture to verify three former collisions remain distinct and
+exact duplicates remain first-wins. Final focused suite: **21 passed**.
+
+The current-head benchmark used the same bounded generated fixtures and three
+fresh-process builder pairs per configuration, alternating builder order. The
+SQLite composite-key cost is included in the prototype times. Values are median
+**[minimum, maximum]** over three runs:
+
+| Index / raw rows | Legacy peak RSS, MiB | Prototype peak RSS, MiB | Legacy build, seconds | Prototype build, seconds |
+| --- | --- | --- | --- | --- |
+| IVFFlat / 32,768 | 172.72 [172.55, 173.39] | 109.58 [108.94, 111.77] | 0.253 [0.244, 0.269] | 0.245 [0.228, 0.270] |
+| IVFFlat / 65,536 | 272.73 [271.66, 276.30] | 144.52 [143.45, 148.66] | 0.561 [0.504, 0.566] | 0.501 [0.484, 0.528] |
+| IVFPQ / 32,768 | 165.89 [165.86, 166.03] | 75.44 [74.55, 75.48] | 0.288 [0.286, 0.299] | 0.286 [0.268, 0.294] |
+| IVFPQ / 65,536 | 264.75 [264.28, 265.20] | 76.23 [75.69, 77.14] | 0.529 [0.520, 0.532] | 0.465 [0.465, 0.491] |
+
+All five metadata arrays, dtypes, and row order matched the current production
+merge in all four configurations. Retained rows were 31,130 and 62,260.
+IVFFlat's all-list search matched exact top-10 on these generated queries;
+approximate ANN rankings differed. PQ's random-data overlap remained poor. The
+larger corpus reduced median peak RSS by 128.22 MiB for IVFFlat and 188.52 MiB
+for PQ. These small shared-machine measurements do not establish production
+scale or semantic-retrieval benefits.
+
+Current-head raw reports (include run configuration, platform and per-run
+metrics):
+
+- [IVFFlat, 32,768 rows](results/index-build-memory-20261118-flat-32768.json)
+- [IVFFlat, 65,536 rows](results/index-build-memory-20261118-flat-65536.json)
+- [IVFPQ, 32,768 rows](results/index-build-memory-20261118-pq-32768.json)
+- [IVFPQ, 65,536 rows](results/index-build-memory-20261118-pq-65536.json)
+
 ## Staged maintainer decision
 
 1. Review the completed red/green checks and four bounded studies, including
    the poor synthetic PQ overlap. Reproduce on another machine and measure a
    duplicate-free fixture and representative data before setting any resource
    budget or performance target. Inspect dedup disk/CPU cost at larger volumes.
-2. Decide the dedup identity/bounds separately with PR #140. This study preserves
-   current behavior, including known collisions. Compare disk-backed dedup cost
-   against alternatives before choosing a production implementation. Consider a
-   matched-training-sample experiment to isolate sampling-induced ANN variation.
+2. Preserve the current production dedup identity and range rejection from #203.
+   Compare the disk-backed composite-key storage/CPU cost against alternatives
+   before choosing a production implementation. Consider a matched-training-
+   sample experiment to isolate sampling-induced ANN variation.
 3. Only after measurements, propose an explicit opt-in production builder with
    supported resource budgets, input validation, snapshot/locking policy, disk
    requirements and publication/recovery guarantees. Keep defaults until reviewed.
@@ -290,17 +338,19 @@ neighbor agreement is not evidence of semantic-retrieval quality.
 
 **Body:** IVF/PQ builds currently merge the complete raw float32 corpus before
 batched addition. Add an isolated two-pass prototype and bounded synthetic
-benchmark using disk-backed legacy dedup, reservoir training, ordered addition
-and compatible streamed metadata. Production defaults remain unchanged.
+benchmark using disk-backed tuple dedup compatible with the current range-derived
+identity, reservoir training, ordered addition and compatible streamed metadata.
+Production defaults remain unchanged.
 
-Validation: reproduce the legacy allocation failure; 47 focused/neighboring tests
-pass with no skips; Ruff and whitespace checks pass. Four configurations include
-three fresh-process pairs each. At 65,536 × 256 rows, median RSS was
-268.62 → 142.80 MiB (IVFFlat) and 263.98 → 74.48 MiB (PQ); raw reports include
-wall time, counts, metadata, sizes and neighbor overlap. Limits: final index
-memory remains, sampling changes ANN results, and random-data PQ overlap is poor.
-The prototype requires immutable shards and a new output directory; Linux,
-production-scale recall and crash recovery remain unvalidated.
+Validation on current upstream: 48 focused/neighboring tests pass with no skips;
+four benchmark configurations have three fresh-process pairs each and stored
+raw reports. At 65,536 × 256 rows, median RSS was 272.73 → 144.52 MiB (IVFFlat)
+and 264.75 → 76.23 MiB (PQ); metadata ordering and dtypes match the current
+production merge. Ruff could not be run locally because its executable is
+absent and package download failed on DNS; whitespace checks pass. Limits: final
+index memory remains, sampling changes ANN results, and random-data PQ overlap
+is poor. The prototype requires immutable shards and a new output directory;
+Linux, production-scale recall and crash recovery remain unvalidated.
 
 ## Maintainer discussion draft (not posted)
 
@@ -311,9 +361,10 @@ in memory. SQLite moves dedup state to disk with a bounded page cache, but adds
 per-row SQL work and scratch-space requirements that need measurement at scale.
 I suggest keeping this as a benchmark/proposal until those costs are understood.
 
-Two policy decisions should stay separate. This study retains the packed-int64
-key semantics, including collisions/overflow, so it does not absorb #140.
-Reservoir sampling is reproducible for a fixed seed but changes trained
+The fixed-decimal collision bug discussed in #140 was fixed upstream in #203.
+This rebase adopts that tuple identity and its `int64` range rejection. The
+remaining question is whether the SQLite composite-key cost is acceptable for
+an opt-in builder. Reservoir sampling is reproducible for a fixed seed but changes trained
 centroids and ANN neighbors compared with the current sampling method. Is that
 acceptable for an explicitly opt-in rebuild, or should a matched-training-sample
 experiment be required first? Neither current overlap results nor the small
@@ -333,15 +384,14 @@ separately. No production default change is proposed by this contribution.
 
 `_merge_all_shards` allocates the complete raw float32 corpus before IVF/PQ or
 Qdrant batching. PQ (#155) reduces final index storage but does not remove this
-input allocation. Could we first review a bounded synthetic memory study and
-an opt-in two-pass prototype before changing defaults? The draft compares fresh
-processes on peak RSS, build time, output size, metadata order and neighbor
-overlap, preserving existing packed-key dedup pending #140. On a 65,536 × 256
-synthetic fixture, three-repeat median RSS was 268.62 → 142.80 MiB for IVFFlat
-and 263.98 → 74.48 MiB for PQ. Both retained 62,260 rows with identical metadata;
-IVFFlat matched exact search when probing all lists, but ANN neighbors differ
-and aggressive PQ has poor overlap on random data. These laptop measurements
-are not production-scale or semantic-retrieval claims. Decisions needed include
-dedup storage cost, shard/sample limits, publication and recovery, and whether
-final IVFFlat memory requires a separate external-memory design. This proposal
-does not include the #140 collision fix or a production backend rewrite.
+input allocation. Could we review a bounded synthetic memory study and an
+opt-in two-pass prototype before changing defaults? The 2026-11-18 rebase
+preserves current tuple dedup identity and range rejection from #203. On the
+65,536 × 256 synthetic fixture, three-repeat median RSS was 272.73 → 144.52 MiB
+for IVFFlat and 264.75 → 76.23 MiB for PQ; both retained 62,260 rows with all
+five metadata arrays aligned. IVFFlat matched exact search when probing all
+lists, but ANN neighbors differ and aggressive PQ has poor overlap on random
+data. These laptop measurements are not production-scale or semantic-retrieval
+claims. Decisions still include dedup disk/CPU cost, shard/sample limits,
+publication and recovery, and whether final IVFFlat memory requires a separate
+external-memory design. This does not propose a production backend rewrite.
