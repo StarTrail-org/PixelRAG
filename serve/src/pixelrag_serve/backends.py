@@ -37,6 +37,8 @@ class VectorBackend(Protocol):
         filter_cache_key: str | None = None,
     ) -> list[list[SearchHit]]: ...
 
+    def hits_for(self, vids: list[int | str]) -> list[SearchHit]: ...
+
     def reconstruct(self, vids: list[int | str]) -> list[list[float] | None]: ...
 
 
@@ -157,6 +159,38 @@ class FaissBackend:
             out.append(hits)
         return out
 
+    def hits_for(self, vids):
+        """Metadata for ids that raw_search did not return (e.g. BM25-only hits).
+
+        vector_id is the row index into the metadata arrays, so this is the
+        same dict raw_search builds, without running a search. `score` is left
+        at 0.0 for the caller to fill in, since it comes from whatever ranked
+        these ids rather than from the vector index.
+        """
+        article_ids = self._meta["article_ids"]
+        tile_indices = self._meta["tile_indices"]
+        chunk_indices = self._meta["chunk_indices"]
+        y_offsets = self._meta["y_offsets"]
+        tile_heights = self._meta["tile_heights"]
+        total = len(article_ids)
+        hits = []
+        for vid in vids:
+            position = int(vid)
+            if position < 0 or position >= total:
+                continue
+            hits.append(
+                {
+                    "score": 0.0,
+                    "vector_id": position,
+                    "article_id": int(article_ids[position]),
+                    "tile_index": int(tile_indices[position]),
+                    "chunk_index": int(chunk_indices[position]),
+                    "y_offset": int(y_offsets[position]),
+                    "tile_height": int(tile_heights[position]),
+                }
+            )
+        return hits
+
     def reconstruct(self, vids):
         # IVF indexes need a direct map before reconstruct(); flat indexes
         # support it natively and have no make_direct_map.
@@ -272,6 +306,31 @@ class QdrantBackend:
         return [
             [self._hit(point) for point in response.points] for response in responses
         ]
+
+    def hits_for(self, vids):
+        """Metadata for ids that raw_search did not return (e.g. BM25-only hits).
+
+        `score` is left at 0.0: a retrieved point carries no query score, and
+        the caller supplies the ranking that produced these ids.
+        """
+        if not vids:
+            return []
+        points = self.client.retrieve(
+            self.collection, ids=list(vids), with_payload=True
+        )
+        hits = []
+        for point in points:
+            payload = point.payload or {}
+            if any(field not in payload for field in _META_FIELDS):
+                continue
+            hits.append(
+                {
+                    "score": 0.0,
+                    "vector_id": point.id,
+                    **{field: int(payload[field]) for field in _META_FIELDS},
+                }
+            )
+        return hits
 
     def reconstruct(self, vids):
         points = self.client.retrieve(self.collection, ids=vids, with_vectors=True)
