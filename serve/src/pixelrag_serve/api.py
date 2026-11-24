@@ -187,6 +187,7 @@ class SearchRequest(BaseModel):
     # FAISS via an IDSelector — not a post-filter, so n_docs results are guaranteed
     # when the department has enough tiles.
     department: str | None = None
+    hybrid: bool = False  # enable hybrid text+visual search (RRF fusion with BM25)
 
 
 # Wikipedia meta/aggregator pages that pollute "find the article" results.
@@ -576,6 +577,36 @@ async def search(req: SearchRequest, request: Request):
         backend.reset_nprobe()
     t_search = time.time() - t0 - t_encode
 
+    # Hybrid: fuse FAISS visual results with BM25 text results via RRF
+    if req.hybrid and _state.get("bm25") and _state["bm25"].loaded:
+        from .hybrid import reciprocal_rank_fusion
+
+        for qi in range(len(req.queries)):
+            query_text = req.queries[qi].text
+            if not query_text:
+                continue
+            hits_by_vid = {hit["vector_id"]: hit for hit in raw[qi]}
+            faiss_ranked = [(hit["vector_id"], hit["score"]) for hit in raw[qi]]
+            bm25_ranked = _state["bm25"].search(query_text, k=fetch_k)
+            fused = reciprocal_rank_fusion([faiss_ranked, bm25_ranked])[:fetch_k]
+
+            # BM25 can rank a vector the dense search never returned, and that
+            # is most of what hybrid retrieval is for. Those ids carry no
+            # SearchHit, so ask the backend for their metadata in one call
+            # rather than dropping them.
+            missing = [vid for vid, _ in fused if vid not in hits_by_vid]
+            if missing:
+                for hit in backend.hits_for(missing):
+                    hits_by_vid[hit["vector_id"]] = hit
+
+            fused_hits = []
+            for vid, rrf_score in fused:
+                hit = hits_by_vid.get(vid)
+                if hit is None:
+                    continue  # unknown to this index; nothing to serve for it
+                fused_hits.append({**hit, "score": float(rrf_score)})
+            raw[qi] = fused_hits
+
     # Build results
     tiles_dir = _state.get("tiles_dir", "")
 
@@ -881,6 +912,12 @@ def load(args):
             book,
             cache,
         )
+
+    # Optional: BM25 text index for hybrid search (RRF fusion)
+    from .hybrid import load_or_build_bm25
+
+    bm25 = load_or_build_bm25(args.index_dir, args.articles_json)
+    _state["bm25"] = bm25
 
 
 def _derive_kiwix_book(kiwix_url: str) -> str:
