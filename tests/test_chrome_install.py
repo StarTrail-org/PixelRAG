@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 import tarfile
+import tempfile
 import types
 import urllib.request
 
@@ -93,3 +94,105 @@ def test_no_decompressor_gives_the_install_hint(install_dir, monkeypatch):
 
     with pytest.raises(RuntimeError, match="apt install zstd"):
         chrome.install_chrome(version="0.0.0-test")
+
+
+# The archive is extracted into INSTALL_DIR, so a member must not be able to
+# write outside it: neither by a "../" name nor through a symlink.
+
+
+def _tar(*members: tarfile.TarInfo) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for member in members:
+            data = b"x" * member.size
+            tar.addfile(member, io.BytesIO(data) if member.isfile() else None)
+    return buf.getvalue()
+
+
+def _file(name: str) -> tarfile.TarInfo:
+    member = tarfile.TarInfo(name)
+    member.size = 1
+    return member
+
+
+def _symlink(name: str, target: str) -> tarfile.TarInfo:
+    member = tarfile.TarInfo(name)
+    member.type = tarfile.SYMTYPE
+    member.linkname = target
+    return member
+
+
+def _serve_archive(monkeypatch, archive: bytes):
+    class ZstdDecompressor:
+        def copy_stream(self, f_in, f_out):
+            f_out.write(archive)
+
+    zstandard = types.SimpleNamespace(ZstdDecompressor=ZstdDecompressor)
+    monkeypatch.setitem(sys.modules, "zstandard", zstandard)
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        pytest.param(
+            lambda: [_file("headless_shell"), _file("../escaped")], id="dotdot"
+        ),
+        pytest.param(
+            lambda: [
+                _file("headless_shell"),
+                _symlink("link", ".."),
+                _file("link/escaped"),
+            ],
+            id="symlink",
+        ),
+    ],
+)
+def test_archive_members_cannot_escape_install_dir(install_dir, monkeypatch, members):
+    _serve_archive(monkeypatch, _tar(*members()))
+
+    with pytest.raises(tarfile.FilterError):
+        chrome.install_chrome(version="0.0.0-test")
+
+    assert not (install_dir.parent / "escaped").exists()
+    # No version file, so the next run downloads again instead of trusting it.
+    assert not (install_dir / chrome.VERSION_FILE).exists()
+
+
+@pytest.fixture
+def temp_dir(tmp_path, monkeypatch):
+    """Point tempfile at an empty directory so leftover temp files are visible."""
+    target = tmp_path / "tmp"
+    target.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(target))
+    return target
+
+
+def test_refused_archive_leaves_no_temp_files(install_dir, temp_dir, monkeypatch):
+    _serve_archive(monkeypatch, _tar(_file("headless_shell"), _file("../escaped")))
+
+    with pytest.raises(tarfile.FilterError):
+        chrome.install_chrome(version="0.0.0-test")
+
+    assert list(temp_dir.iterdir()) == []
+
+
+def test_failed_download_leaves_no_temp_files(install_dir, temp_dir, monkeypatch):
+    def download(url, filename, reporthook=None):
+        raise OSError("network down")
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", download)
+
+    # The download error itself surfaces, not a cleanup error.
+    with pytest.raises(OSError, match="network down"):
+        chrome.install_chrome(version="0.0.0-test")
+
+    assert list(temp_dir.iterdir()) == []
+
+
+def test_plain_archive_still_installs(install_dir, monkeypatch):
+    _serve_archive(monkeypatch, _tar(_file("headless_shell"), _file("lib/libEGL.so")))
+
+    binary = chrome.install_chrome(version="0.0.0-test")
+
+    assert binary.is_file()
+    assert (install_dir / "lib" / "libEGL.so").is_file()
