@@ -717,11 +717,22 @@ async def reconstruct(req: ReconstructRequest):
 @app.get("/tile")
 async def tile(path: str):
     """Serve a tile image by its local path (legacy, use /tile/{article_id}/{tile_index}/{chunk_index} instead)."""
-    tiles_dir = _state.get("tiles_dir", "./tiles")
+    tiles_root = os.path.realpath(_state.get("tiles_dir", "./tiles"))
     resolved = os.path.realpath(path)
+    if not os.path.isabs(path):
+        # /search returns paths relative to tiles_dir, so resolve against it
+        # rather than the process working directory.
+        under_tiles = os.path.realpath(os.path.join(tiles_root, path))
+        # Prefer the path under tiles_dir. Fall back to the old
+        # working-directory path only when a file actually exists there;
+        # if neither exists, stay with the tiles_dir path so a missing tile
+        # gets a 404 instead of a misleading 403. The containment check
+        # below runs on whichever path is picked.
+        if os.path.isfile(under_tiles) or not os.path.isfile(resolved):
+            resolved = under_tiles
     # Compare whole path components: a plain string-prefix check would let a
     # sibling such as "<tiles_dir>_private" through.
-    if not Path(resolved).is_relative_to(os.path.realpath(tiles_dir)):
+    if not Path(resolved).is_relative_to(tiles_root):
         raise HTTPException(status_code=403, detail="Path not under tiles directory")
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
