@@ -247,6 +247,8 @@ def install_chrome(version: str | None = None, force: bool = False) -> Path:
 
     with tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False) as tmp:
         tmp_path = tmp.name
+    # Set before the try so the cleanup below can always refer to it.
+    decomp_path = tmp_path + ".tar"
 
     try:
         urllib.request.urlretrieve(url, tmp_path, _progress_hook)
@@ -255,7 +257,6 @@ def install_chrome(version: str | None = None, force: bool = False) -> Path:
         # Decompress: zstd → tar → extract
         print("Extracting...")
         # Try zstd decompression
-        decomp_path = tmp_path + ".tar"
         try:
             subprocess.run(
                 ["zstd", "-d", tmp_path, "-o", decomp_path],
@@ -278,8 +279,9 @@ def install_chrome(version: str | None = None, force: bool = False) -> Path:
                 )
 
         with tarfile.open(decomp_path) as tar:
-            tar.extractall(INSTALL_DIR)
-        os.unlink(decomp_path)
+            # "data" refuses members that would land outside INSTALL_DIR
+            # ("../" names, absolute or escaping links) and device files.
+            tar.extractall(INSTALL_DIR, filter="data")
 
         # Set executable permission
         binary_path.chmod(0o755)
@@ -296,6 +298,9 @@ def install_chrome(version: str | None = None, force: bool = False) -> Path:
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+        # Also after a failed or refused extraction, not only on success.
+        if os.path.exists(decomp_path):
+            os.unlink(decomp_path)
 
 
 def _progress_hook(block_num, block_size, total_size):
