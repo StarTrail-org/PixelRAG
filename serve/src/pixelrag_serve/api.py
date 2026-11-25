@@ -177,9 +177,14 @@ class SearchRequest(BaseModel):
     # Bounded: fetch_k = n_docs * 10 feeds FAISS search k, so an unbounded value
     # is a trivial OOM/DoS on the public endpoint. Largest real caller uses 10.
     n_docs: int = Field(default=10, ge=1, le=1000)
-    nprobe: int | None = None  # override default nprobe
+    # Override the default nprobe. FAISS can't search with 0 or store a
+    # negative value (both were 500s); values above nlist are clamped by FAISS,
+    # so there is no upper bound here.
+    nprobe: int | None = Field(default=None, ge=1)
     min_tile_height: int | None = None  # filter out small/blank chunks
-    instruction: str | None = None  # override query embedding instruction
+    # Override the query embedding instruction. Bounded: it is embedded with
+    # every query in the batch.
+    instruction: str | None = Field(default=None, max_length=512)
     include_images: bool = False  # return base64-encoded tile images
     articles_only: bool = False  # drop Wikipedia meta pages (Portal:, List_of_, …)
     # Restrict search to one department (articles.json "department" field, set by
