@@ -11,6 +11,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lockfiles:
+    name: Lockfile checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check every uv project lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=0
+          while IFS= read -r -d '' manifest; do
+            project="${manifest%/pyproject.toml}"
+            printf 'Checking %s/uv.lock\n' "$project"
+            uv lock --check --project "$project"
+            count=$((count + 1))
+          done < <(find . -name pyproject.toml -not -path '*/.venv/*' -print0)
+          if (( count == 0 )); then
+            echo "No uv projects found" >&2
+            exit 1
+          fi
+
   python-lint:
     name: Python lint
     runs-on: ubuntu-latest

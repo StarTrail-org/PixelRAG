@@ -21,12 +21,21 @@ uv run pixelshot install-chrome
 
 ## What CI runs
 
-Six jobs. The three you can reproduce locally in under a minute:
+Six jobs. The main lint and test commands are quick to reproduce locally:
 
 ```bash
 uvx ruff check .            # Python lint
 uvx ruff format --check .   # formatting
 uv run pytest tests/        # Tests
+```
+
+The lockfile job checks every uv project discovered from its `pyproject.toml`:
+
+```bash
+set -euo pipefail
+while IFS= read -r -d '' manifest; do
+    uv lock --check --project "${manifest%/pyproject.toml}"
+done < <(find . -name pyproject.toml -not -path '*/.venv/*' -print0)
 ```
 
 `demos/` and `train/` are **in** lint scope (the exclude list is `tmp`, `docs`,
