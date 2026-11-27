@@ -1,5 +1,7 @@
 # Index build memory study: measured opt-in prototype
 
+**Last measured:** 2026-11-18, using production builder commit `94fdad277ed0e64ecc217b935204e704a1d582a5` as the source for the current-head reports. The 2026-10-12 reports are historical and superseded.
+
 ## Status and scope
 
 Originally measured on 2026-10-12 at `b4fe76301465eaee3d8ac75e0bec54664e53c072`.
