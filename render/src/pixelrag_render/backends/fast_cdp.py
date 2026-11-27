@@ -494,7 +494,7 @@ async def _run_render(
 
                 for t in range(n_tiles):
                     clip_h = min(tile_height, page_h - t * tile_height)
-                    if clip_h <= 28:
+                    if t > 0 and clip_h <= 28:
                         break
 
                     # Scroll + wait in-viewport images (outside semaphore)
