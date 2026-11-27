@@ -592,6 +592,12 @@ async def _setup_page(
             "mobile": False,
         },
     )
+    await _cdp_send(
+        ws,
+        msg_id_ref,
+        "Emulation.setEmulatedMedia",
+        {"features": [{"name": "prefers-color-scheme", "value": "light"}]},
+    )
 
 
 async def _drain_queue(
