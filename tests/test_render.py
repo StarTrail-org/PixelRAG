@@ -216,3 +216,19 @@ def test_truncation_reason_rules():
 
     # Measured, but exactly one viewport: the truncation signature.
     assert "exactly the tile height" in truncation_reason(1568, 1568, measured=True)
+
+
+def test_page_28px_or_shorter_still_gets_a_tile(tmp_path):
+    html = tmp_path / "short.html"
+    html.write_text(
+        '<!DOCTYPE html><html><body style="margin:0">'
+        '<div style="height:10px">x</div></body></html>'
+    )
+
+    dirs = render_file(html, tmp_path / "tiles")
+    tile_dir = Path(dirs[0])
+    manifest = json.loads((tile_dir / "tiles.json").read_text())
+
+    assert manifest["page_height"] == 10
+    assert manifest["tiles"] == ["tile_0000.jpg"]
+    assert (tile_dir / "tile_0000.jpg").exists()
